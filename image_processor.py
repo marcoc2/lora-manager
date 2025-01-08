@@ -100,31 +100,38 @@ class ImageProcessor:
             return False
 
     def process_directory(self, input_dir: Path, output_dir: Path, 
-                         target_size: Tuple[int, int],
-                         progress_callback: Optional[Callable[[str], None]] = None) -> tuple:
+                        target_size: Tuple[int, int],
+                        progress_callback: Optional[Callable[[str], None]] = None) -> tuple:
         """
         Processa todas as imagens em um diretório
-        
+
+        Args:
+            input_dir: Diretório com as imagens de entrada
+            output_dir: Diretório para salvar as imagens processadas
+            target_size: Tamanho desejado (width, height)
+            progress_callback: Função para reportar progresso
+
         Returns:
             tuple: (total_processed, total_failed)
         """
         # Cria diretório de saída se não existir
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Lista todas as imagens
+
+        # Lista todas as imagens suportadas (incluindo WebP)
         image_files = []
-        for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp'):
+        for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp', '*.webp'):  # Adicionado suporte ao WebP
             image_files.extend(input_dir.glob(ext))
-        
+
         total_processed = 0
         total_failed = 0
-        
+
         for img_path in image_files:
-            output_path = output_dir / f"{img_path.stem}.png"
-            
+            output_path = output_dir / f"{img_path.stem}.png"  # Converte para PNG por padrão
+
             if self.process_image(img_path, output_path, target_size, progress_callback):
                 total_processed += 1
             else:
                 total_failed += 1
-        
+
         return total_processed, total_failed
+

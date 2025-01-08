@@ -1,5 +1,6 @@
 import sys
 import toml
+from PIL import Image
 from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QTreeView, QMenu, QPushButton, 
@@ -11,6 +12,33 @@ from PyQt6.QtCore import Qt
 from image_processor import ImageProcessor
 from caption_generator import CaptionGenerator
 from training_dialog import TrainingConfigDialog
+
+class SuffixInputDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Enter Suffix")
+        self.setModal(True)
+
+        layout = QVBoxLayout()
+        self.suffix_input = QLineEdit()
+        self.suffix_input.setPlaceholderText("Enter suffix (e.g., _XXX)")
+        layout.addWidget(QLabel("Suffix for renaming:"))
+        layout.addWidget(self.suffix_input)
+
+        buttons = QHBoxLayout()
+        ok_button = QPushButton("OK")
+        cancel_button = QPushButton("Cancel")
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(ok_button)
+        buttons.addWidget(cancel_button)
+
+        layout.addLayout(buttons)
+        self.setLayout(layout)
+
+    def get_suffix(self):
+        return self.suffix_input.text().strip()
+
 
 class TomlConfigDialog(QDialog):
     def __init__(self, parent=None):
@@ -189,6 +217,61 @@ class DatasetManagerGUI(QMainWindow):
         
         central_widget.setLayout(layout)
 
+    def rename_and_convert_images(self):
+        if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
+            return
+
+        # Abre o diálogo para obter o sufixo
+        dialog = SuffixInputDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        suffix = dialog.get_suffix()
+        if not suffix:
+            QMessageBox.warning(self, "Warning", "Suffix cannot be empty!")
+            return
+
+        # Diretório com as imagens
+        image_dir = self.dataset_path / "cropped_images"
+        if not image_dir.exists():
+            QMessageBox.warning(self, "Warning", "Cropped images directory does not exist!")
+            return
+
+        # Processa imagens
+        image_files = list(image_dir.glob("*.[jp][pn][g]")) + list(image_dir.glob("*.webp"))
+        if not image_files:
+            QMessageBox.warning(self, "Warning", "No images found to rename and convert!")
+            return
+
+        converted_count = 0
+
+        for idx, image_path in enumerate(sorted(image_files), 1):
+            try:
+                # Novo nome com o sufixo
+                new_name = f"{image_path.stem}{suffix}_{str(idx).zfill(3)}.png"
+                new_path = image_dir / new_name
+
+                # Converte a imagem para PNG
+                with Image.open(image_path) as img:
+                    img = img.convert("RGB")  # Converte para RGB se necessário
+                    img.save(new_path, "PNG")
+
+                # Remove a imagem original se for diferente do novo formato
+                if image_path.suffix.lower() != ".png":
+                    image_path.unlink()
+
+                converted_count += 1
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to process {image_path.name}: {e}")
+
+        QMessageBox.information(self, "Success", f"Renamed and converted {converted_count} images successfully!")
+        
+        # Atualiza a árvore
+        self.tree_model.clear()
+        self.populate_tree_view(self.dataset_path)
+
+
+
     def select_dataset_folder(self):
         """Seleciona a pasta do dataset"""
         folder = QFileDialog.getExistingDirectory(self, "Select Dataset Folder")
@@ -229,8 +312,13 @@ class DatasetManagerGUI(QMainWindow):
         analyze.triggered.connect(self.analyze_dataset)
         menu.addAction(analyze)
         
+        rename_convert_action = QAction("Rename and Convert Images", self)
+        rename_convert_action.triggered.connect(self.rename_and_convert_images)
+        menu.addAction(rename_convert_action)
+
         # Mostra menu
         menu.exec(self.tree_view.viewport().mapToGlobal(position))
+
 
     def show_training_config(self):
         """Mostra diálogo de configuração do treinamento"""
@@ -403,10 +491,10 @@ class DatasetManagerGUI(QMainWindow):
             QMessageBox.critical(self, "Error", f"Error generating captions: {str(e)}")
 
     def generate_toml(self):
-        """Gera arquivo dataset.toml"""
+        """Gera o arquivo dataset.toml"""
         if not self.dataset_path:
             return
-            
+        
         try:
             # Abre diálogo de configuração
             dialog = TomlConfigDialog(self)
@@ -415,9 +503,9 @@ class DatasetManagerGUI(QMainWindow):
                 
                 # Cria pasta cropped_images se não existir
                 cropped_dir = self.dataset_path / "cropped_images"
-                cropped_dir.mkdir(exist_ok=True)
+                cropped_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Prepara dados do TOML com path relativo
+                # Prepara dados do TOML
                 toml_data = {
                     "general": {
                         "shuffle_caption": False,
@@ -429,7 +517,8 @@ class DatasetManagerGUI(QMainWindow):
                         "batch_size": 1,
                         "keep_tokens": 1,
                         "subsets": [{
-                            "image_dir": ".",  # Path relativo ao local do dataset.toml
+                            # Corrigindo o caminho do image_dir
+                            "image_dir": str(cropped_dir.resolve()),  # Caminho absoluto
                             "class_tokens": config['class_tokens'],
                             "num_repeats": config['num_repeats']
                         }]
@@ -448,6 +537,7 @@ class DatasetManagerGUI(QMainWindow):
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error generating dataset.toml: {str(e)}")
+
 
     def update_status(self):
         """Atualiza o label de status com informações do dataset atual"""
