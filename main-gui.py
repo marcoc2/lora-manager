@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QDialog, QLineEdit, QFormLayout, QProgressDialog)  # Adicionado QProgressDialog aqui
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction
 from PyQt6.QtCore import Qt
+from typing import Tuple, List, Optional, Callable
 
 from image_processor import ImageProcessor
 from caption_generator import CaptionGenerator
@@ -283,6 +284,7 @@ class DatasetManagerGUI(QMainWindow):
             self.populate_tree_view(self.dataset_path)
             self.update_status()
 
+
     def show_context_menu(self, position):
         """Mostra menu de contexto com operações disponíveis"""
         if not self.dataset_path:
@@ -315,6 +317,8 @@ class DatasetManagerGUI(QMainWindow):
         rename_convert_action = QAction("Rename and Convert Images", self)
         rename_convert_action.triggered.connect(self.rename_and_convert_images)
         menu.addAction(rename_convert_action)
+
+        process_action.triggered.connect(self.process_images)
 
         # Mostra menu
         menu.exec(self.tree_view.viewport().mapToGlobal(position))
@@ -392,8 +396,8 @@ class DatasetManagerGUI(QMainWindow):
             return
             
         try:
-            # Prepara diretórios
-            input_dir = self.dataset_path
+            # Prepara diretórios - usando o próprio dataset_path como input
+            input_dir = self.dataset_path  # <-- Aqui está a correção
             output_dir = self.dataset_path / "cropped_images"
             
             # Conta arquivos para a barra de progresso
@@ -424,6 +428,7 @@ class DatasetManagerGUI(QMainWindow):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error processing images: {str(e)}")
+
 
     def generate_captions(self):
         """Gera captions para as imagens"""

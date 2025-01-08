@@ -25,69 +25,60 @@ class ImageProcessor:
         return faces
 
     def process_image(self, image_path: Path, output_path: Path, 
-                     target_size: Tuple[int, int],
-                     progress_callback: Optional[Callable[[str], None]] = None) -> bool:
+                    target_size: Tuple[int, int],
+                    progress_callback: Optional[Callable[[str], None]] = None) -> bool:
         """
-        Processa uma única imagem
-        
-        Args:
-            image_path: Caminho da imagem de entrada
-            output_path: Caminho para salvar a imagem processada
-            target_size: Tamanho desejado (width, height)
-            progress_callback: Função para reportar progresso
-            
-        Returns:
-            bool: True se processou com sucesso, False caso contrário
+        Processa uma única imagem com redimensionamento inteligente e/ou crop.
+        - Se a imagem for quadrada e maior que o target, faz apenas resize
+        - Se a imagem não for quadrada, redimensiona mantendo a menor dimensão igual ao target
+        e depois faz crop do excesso da dimensão maior
         """
         try:
             # Abre imagem com PIL
             with Image.open(image_path) as pil_image:
                 pil_image = pil_image.convert("RGB")
                 
-                # Verifica se precisa fazer upscaling
-                if pil_image.width < target_size[0] or pil_image.height < target_size[1]:
-                    ratio = max(target_size[0] / pil_image.width, 
-                              target_size[1] / pil_image.height)
-                    new_size = (int(pil_image.width * ratio), 
-                              int(pil_image.height * ratio))
-                    pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
-
-                # Se usar detecção facial
-                if self.use_face_detection:
-                    # Converte para OpenCV
-                    opencv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-                    faces = self.detect_faces(opencv_image)
-                    
-                    if len(faces) > 0:
-                        x, y, w, h = faces[0]
-                        center_x = x + w // 2
-                        center_y = y + h // 2
-                    else:
-                        center_x = pil_image.width // 2
-                        center_y = pil_image.height // 2
+                width, height = pil_image.size
+                target_width, target_height = target_size
+                
+                # Se a imagem for quadrada (ou quase quadrada, com margem de 5%)
+                if abs(width - height) <= min(width, height) * 0.05:
+                    # Faz apenas resize se for maior que o target
+                    if width > target_width:
+                        pil_image = pil_image.resize(target_size, Image.Resampling.LANCZOS)
                 else:
-                    center_x = pil_image.width // 2
-                    center_y = pil_image.height // 2
-
-                # Calcula coordenadas do crop
-                left = max(center_x - target_size[0] // 2, 0)
-                top = max(center_y - target_size[1] // 2, 0)
-                right = min(left + target_size[0], pil_image.width)
-                bottom = min(top + target_size[1], pil_image.height)
-
-                # Faz o crop
-                cropped_image = pil_image.crop((left, top, right, bottom))
-
-                # Se o crop for menor que o tamanho desejado, centraliza em fundo preto
-                if cropped_image.size != target_size:
-                    new_image = Image.new("RGB", target_size, (0, 0, 0))
-                    paste_x = (target_size[0] - cropped_image.width) // 2
-                    paste_y = (target_size[1] - cropped_image.height) // 2
-                    new_image.paste(cropped_image, (paste_x, paste_y))
-                    cropped_image = new_image
+                    # Imagem não é quadrada
+                    # Calcula a proporção baseada na menor dimensão
+                    min_dim = min(width, height)
+                    target_min = min(target_width, target_height)
+                    scale = target_min / min_dim
+                    
+                    # Redimensiona mantendo proporção
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # Se após o resize ainda precisar de crop
+                    if new_width != target_width or new_height != target_height:
+                        # Centraliza o crop
+                        left = (new_width - target_width) // 2 if new_width > target_width else 0
+                        top = (new_height - target_height) // 2 if new_height > target_height else 0
+                        right = left + target_width
+                        bottom = top + target_height
+                        
+                        # Faz o crop
+                        pil_image = pil_image.crop((left, top, right, bottom))
+                        
+                        # Se ainda precisar de padding (caso raro, mas possível)
+                        if pil_image.size != target_size:
+                            new_image = Image.new("RGB", target_size, (0, 0, 0))
+                            paste_x = (target_width - pil_image.width) // 2
+                            paste_y = (target_height - pil_image.height) // 2
+                            new_image.paste(pil_image, (paste_x, paste_y))
+                            pil_image = new_image
 
                 # Salva resultado
-                cropped_image.save(output_path, "PNG")
+                pil_image.save(output_path, "PNG")
 
                 if progress_callback:
                     progress_callback(f"Processed {image_path.name}")
@@ -99,39 +90,44 @@ class ImageProcessor:
                 progress_callback(f"Error processing {image_path.name}: {str(e)}")
             return False
 
+
     def process_directory(self, input_dir: Path, output_dir: Path, 
                         target_size: Tuple[int, int],
-                        progress_callback: Optional[Callable[[str], None]] = None) -> tuple:
+                        progress_callback: Optional[Callable[[str], None]] = None) -> Tuple[int, int]:
         """
-        Processa todas as imagens em um diretório
+        Processa todas as imagens em um diretório.
 
         Args:
-            input_dir: Diretório com as imagens de entrada
-            output_dir: Diretório para salvar as imagens processadas
-            target_size: Tamanho desejado (width, height)
-            progress_callback: Função para reportar progresso
+            input_dir: Diretório com as imagens de entrada.
+            output_dir: Diretório para salvar as imagens processadas.
+            target_size: Dimensão final desejada (largura, altura).
+            progress_callback: Função para reportar progresso.
 
         Returns:
-            tuple: (total_processed, total_failed)
+            Tuple[int, int]: Número de imagens processadas e falhas.
         """
         # Cria diretório de saída se não existir
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Lista todas as imagens suportadas (incluindo WebP)
+        # Lista todos os arquivos de imagem suportados
         image_files = []
-        for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp', '*.webp'):  # Adicionado suporte ao WebP
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp']:
             image_files.extend(input_dir.glob(ext))
+
+        if not image_files:
+            return 0, 0
 
         total_processed = 0
         total_failed = 0
 
-        for img_path in image_files:
-            output_path = output_dir / f"{img_path.stem}.png"  # Converte para PNG por padrão
-
-            if self.process_image(img_path, output_path, target_size, progress_callback):
+        for image_path in image_files:
+            output_path = output_dir / f"{image_path.stem}.png"
+            success = self.process_image(image_path, output_path, target_size, progress_callback)
+            if success:
                 total_processed += 1
             else:
                 total_failed += 1
 
         return total_processed, total_failed
+
 
