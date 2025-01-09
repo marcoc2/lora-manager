@@ -1,24 +1,58 @@
 import torch
-from transformers import BlipProcessor, BlipForConditionalGeneration
+import os
+from transformers import AutoProcessor, AutoModelForCausalLM
 from PIL import Image
 from pathlib import Path
 from typing import Tuple, Optional, Callable
+import gc
+from unittest.mock import patch
+from transformers.dynamic_module_utils import get_imports
+
+def fixed_get_imports(filename: str | os.PathLike) -> list[str]:
+    if os.path.basename(filename) != "modeling_florence2.py":
+        return get_imports(filename)
+    imports = get_imports(filename)
+    imports.remove("flash_attn")
+    return imports
 
 class CaptionGenerator:
-    def __init__(self):
+    def __init__(self, model_version="base"):
         self.processor = None
         self.model = None
+        self.model_version = model_version
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        os.environ['TRUST_REMOTE_CODE'] = 'true'
+        os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+        os.environ['HF_HUB_OFFLINE'] = '0'
         
     def _init_model(self):
-        """Inicializa o modelo BLIP sob demanda"""
+        """Inicializa o modelo Florence-2 sob demanda"""
         if self.processor is None:
-            self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-            self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+            identifier = f"microsoft/Florence-2-{self.model_version}"
+            
+            # Configurar antes de importar/carregar
+            import transformers
+            transformers.utils.TRUST_REMOTE_CODE = True
+            
+            with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports):
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    identifier,
+                    trust_remote_code=True,  # redundante mas mantido por clareza
+                    torch_dtype=torch.float16
+                ).to(self.device)
+                
+                self.processor = AutoProcessor.from_pretrained(
+                    identifier,
+                    trust_remote_code=True  # redundante mas mantido por clareza
+                )
+            
+            self.model.eval()
     
     def generate_caption(self, image_path: Path, 
                         progress_callback: Optional[Callable[[str], None]] = None) -> str:
         """
-        Gera caption para uma única imagem
+        Gera caption para uma única imagem usando Florence-2
         
         Args:
             image_path: Caminho da imagem
@@ -32,18 +66,54 @@ class CaptionGenerator:
             
             # Abre e processa a imagem
             image = Image.open(image_path).convert('RGB')
-            inputs = self.processor(image, return_tensors="pt")
+            
+            # Redimensiona se necessário
+            max_size = 1024
+            if max(image.size) > max_size:
+                ratio = max_size / max(image.size)
+                new_size = tuple(int(dim * ratio) for dim in image.size)
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Prepara inputs
+            task_prompt = '<MORE_DETAILED_CAPTION>'
+            inputs = self.processor(
+                text=task_prompt,
+                images=image,
+                return_tensors="pt",
+                padding=True
+            )
+            
+            # Move para GPU com tipos corretos
+            inputs['input_ids'] = inputs['input_ids'].to(self.device, dtype=torch.long)
+            inputs['attention_mask'] = inputs['attention_mask'].to(self.device, dtype=torch.long)
+            inputs['pixel_values'] = inputs['pixel_values'].to(self.device, dtype=torch.float16)
             
             # Gera caption
             with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_length=50,
+                generated_ids = self.model.generate(
+                    input_ids=inputs['input_ids'],
+                    attention_mask=inputs['attention_mask'],
+                    pixel_values=inputs['pixel_values'],
+                    max_new_tokens=512,
                     num_beams=5,
-                    temperature=0.9,
-                    top_p=0.9,
+                    do_sample=False,
+                    length_penalty=1.0,
+                    repetition_penalty=1.5
                 )
-            caption = self.processor.decode(outputs[0], skip_special_tokens=True)
+                
+                generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+                parsed_answer = self.processor.post_process_generation(
+                    generated_text,
+                    task=task_prompt,
+                    image_size=(image.width, image.height)
+                )
+                caption = parsed_answer[task_prompt]
+            
+            # Limpa memória GPU
+            del inputs, generated_ids
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
             
             if progress_callback:
                 progress_callback(f"Generated caption for {image_path.name}")
@@ -56,8 +126,8 @@ class CaptionGenerator:
             raise
     
     def process_directory(self, images_dir: Path, captions_dir: Path,
-                        prefix: str = "",
-                        progress_callback: Optional[Callable[[str, int], None]] = None) -> Tuple[int, int]:
+                         prefix: str = "",
+                         progress_callback: Optional[Callable[[str, int], None]] = None) -> Tuple[int, int]:
         """
         Processa todas as imagens em um diretório
         
@@ -101,5 +171,10 @@ class CaptionGenerator:
                 if progress_callback:
                     progress_callback(f"Failed to process {img_path.name}: {str(e)}", -1)
                 failed += 1
+            
+            # Limpa memória GPU periodicamente
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
         
         return processed, failed
