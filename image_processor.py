@@ -29,9 +29,11 @@ class ImageProcessor:
                     progress_callback: Optional[Callable[[str], None]] = None) -> bool:
         """
         Processa uma única imagem com redimensionamento inteligente e/ou crop.
-        - Se a imagem for quadrada e maior que o target, faz apenas resize
+        - Se a imagem for quadrada e maior/menor que o target, faz resize mantendo proporções
         - Se a imagem não for quadrada, redimensiona mantendo a menor dimensão igual ao target
-        e depois faz crop do excesso da dimensão maior
+          e depois faz crop do excesso da dimensão maior
+        - Para imagens menores que o target, amplia usando Lanczos mantendo proporções
+          antes de fazer o crop
         """
         try:
             # Abre imagem com PIL
@@ -43,39 +45,32 @@ class ImageProcessor:
                 
                 # Se a imagem for quadrada (ou quase quadrada, com margem de 5%)
                 if abs(width - height) <= min(width, height) * 0.05:
-                    # Faz apenas resize se for maior que o target
-                    if width > target_width:
-                        pil_image = pil_image.resize(target_size, Image.Resampling.LANCZOS)
+                    # Faz resize independente do tamanho original
+                    pil_image = pil_image.resize(target_size, Image.Resampling.LANCZOS)
                 else:
                     # Imagem não é quadrada
-                    # Calcula a proporção baseada na menor dimensão
-                    min_dim = min(width, height)
-                    target_min = min(target_width, target_height)
-                    scale = target_min / min_dim
+                    # Determina qual dimensão (largura ou altura) deve ser usada como referência
+                    # para manter o aspect ratio ao redimensionar
+                    width_ratio = target_width / width
+                    height_ratio = target_height / height
+                    
+                    # Usa a maior razão para garantir que a imagem cubra o target_size
+                    scale = max(width_ratio, height_ratio)
                     
                     # Redimensiona mantendo proporção
                     new_width = int(width * scale)
                     new_height = int(height * scale)
                     pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
                     
-                    # Se após o resize ainda precisar de crop
-                    if new_width != target_width or new_height != target_height:
-                        # Centraliza o crop
-                        left = (new_width - target_width) // 2 if new_width > target_width else 0
-                        top = (new_height - target_height) // 2 if new_height > target_height else 0
-                        right = left + target_width
-                        bottom = top + target_height
-                        
-                        # Faz o crop
-                        pil_image = pil_image.crop((left, top, right, bottom))
-                        
-                        # Se ainda precisar de padding (caso raro, mas possível)
-                        if pil_image.size != target_size:
-                            new_image = Image.new("RGB", target_size, (0, 0, 0))
-                            paste_x = (target_width - pil_image.width) // 2
-                            paste_y = (target_height - pil_image.height) // 2
-                            new_image.paste(pil_image, (paste_x, paste_y))
-                            pil_image = new_image
+                    # Sempre fará crop pois redimensionamos para maior que o necessário
+                    # Centraliza o crop
+                    left = (new_width - target_width) // 2
+                    top = (new_height - target_height) // 2
+                    right = left + target_width
+                    bottom = top + target_height
+                    
+                    # Faz o crop
+                    pil_image = pil_image.crop((left, top, right, bottom))
 
                 # Salva resultado
                 pil_image.save(output_path, "PNG")

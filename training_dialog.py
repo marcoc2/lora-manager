@@ -118,7 +118,7 @@ class TrainingConfigDialog(QDialog):
 
         self.network_dim = QSpinBox()
         self.network_dim.setRange(1, 128)
-        self.network_dim.setValue(16)
+        self.network_dim.setValue(32)
         network_layout.addRow("Network Dimension:", self.network_dim)
 
         self.network_alpha = QSpinBox()
@@ -133,7 +133,7 @@ class TrainingConfigDialog(QDialog):
         training_group = QGroupBox("Training Parameters")
         training_layout = QFormLayout()
 
-        self.learning_rate = QLineEdit("1e-3")
+        self.learning_rate = QLineEdit("1e-4")
         training_layout.addRow("Learning Rate:", self.learning_rate)
 
         self.epochs = QSpinBox()
@@ -143,7 +143,7 @@ class TrainingConfigDialog(QDialog):
 
         self.save_every = QSpinBox()
         self.save_every.setRange(1, 100)
-        self.save_every.setValue(16)
+        self.save_every.setValue(32)
         training_layout.addRow("Save Every N Epochs:", self.save_every)
 
         self.seed = QSpinBox()

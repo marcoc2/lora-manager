@@ -1,5 +1,5 @@
-import torch
 import os
+import torch
 from transformers import AutoProcessor, AutoModelForCausalLM
 from PIL import Image
 from pathlib import Path
@@ -7,6 +7,15 @@ from typing import Tuple, Optional, Callable
 import gc
 from unittest.mock import patch
 from transformers.dynamic_module_utils import get_imports
+import warnings
+import transformers.utils.hub
+
+# Monkey patch a função de verificação do transformers para sempre retornar True
+def _always_true(*args, **kwargs):
+    return True
+
+# Substituir a função original
+transformers.utils.hub._is_true = _always_true
 
 def fixed_get_imports(filename: str | os.PathLike) -> list[str]:
     if os.path.basename(filename) != "modeling_florence2.py":
@@ -21,30 +30,28 @@ class CaptionGenerator:
         self.model = None
         self.model_version = model_version
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        os.environ['TRUST_REMOTE_CODE'] = 'true'
-        os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
-        os.environ['HF_HUB_OFFLINE'] = '0'
         
     def _init_model(self):
         """Inicializa o modelo Florence-2 sob demanda"""
         if self.processor is None:
             identifier = f"microsoft/Florence-2-{self.model_version}"
             
-            # Configurar antes de importar/carregar
-            import transformers
-            transformers.utils.TRUST_REMOTE_CODE = True
-            
             with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports):
                 self.model = AutoModelForCausalLM.from_pretrained(
                     identifier,
-                    trust_remote_code=True,  # redundante mas mantido por clareza
-                    torch_dtype=torch.float16
+                    trust_remote_code=True,
+                    torch_dtype=torch.float16,
+                    force_download=False,
+                    resume_download=True,
+                    local_files_only=False
                 ).to(self.device)
                 
                 self.processor = AutoProcessor.from_pretrained(
                     identifier,
-                    trust_remote_code=True  # redundante mas mantido por clareza
+                    trust_remote_code=True,
+                    force_download=False,
+                    resume_download=True,
+                    local_files_only=False
                 )
             
             self.model.eval()
