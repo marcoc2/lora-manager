@@ -3,16 +3,19 @@ import toml
 from PIL import Image
 from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QTreeView, QMenu, QPushButton, 
-                            QFileDialog, QMessageBox, QLabel, QSpinBox,
-                            QDialog, QLineEdit, QFormLayout, QProgressDialog)  # Adicionado QProgressDialog aqui
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction
-from PyQt6.QtCore import Qt
-from typing import Tuple, List, Optional, Callable
+                            QHBoxLayout, QTreeView, QGroupBox, QPushButton, 
+                            QDialog, QMessageBox, QLabel, QSpinBox,
+                            QFileDialog, QProgressDialog, QFormLayout, QLineEdit)
+from PyQt6.QtGui import QStandardItemModel, QStandardItem
+from PyQt6.QtCore import Qt, QProcess
+from PyQt6.QtGui import QStandardItemModel, QStandardItem
+from PyQt6.QtCore import Qt, QProcess
 
 from image_processor import ImageProcessor
 from caption_generator import CaptionGenerator
-from training_dialog import TrainingConfigDialog
+from training_widgets import TrainingWidgets, CommandOutputDialog
+from dialogs import TomlConfigDialog, CaptionConfigDialog, ProcessProgressDialog, SuffixInputDialog
+
 
 class SuffixInputDialog(QDialog):
     def __init__(self, parent=None):
@@ -124,11 +127,13 @@ class CaptionConfigDialog(QDialog):
             'prefix': self.prefix.text()
         }
 
+
+
 class DatasetManagerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dataset Manager")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1100, 900)  # Aumentei a largura para acomodar os widgets de treino
         
         # State
         self.dataset_path = None
@@ -144,7 +149,7 @@ class DatasetManagerGUI(QMainWindow):
         # Layout principal
         layout = QHBoxLayout()
         
-        # Painel esquerdo - TreeView e controles
+        # Painel esquerdo - TreeView e seleção de pasta
         left_panel = QWidget()
         left_layout = QVBoxLayout()
         
@@ -155,233 +160,117 @@ class DatasetManagerGUI(QMainWindow):
         
         # TreeView para visualização do dataset
         self.tree_view = QTreeView()
-        self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree_view.customContextMenuRequested.connect(self.show_context_menu)
-        
-        # Modelo de dados customizado
         self.tree_model = QStandardItemModel()
         self.tree_model.setHorizontalHeaderLabels(['Dataset Structure'])
-        
-        # Configura o TreeView
         self.tree_view.setModel(self.tree_model)
         self.tree_view.setColumnWidth(0, 300)
         left_layout.addWidget(self.tree_view)
         
         left_panel.setLayout(left_layout)
         
-        # Painel direito - Configurações e status
-        right_panel = QWidget()
-        right_layout = QVBoxLayout()
+        # Painel central - Configurações e processamento
+        center_panel = QWidget()
+        center_layout = QVBoxLayout()
+        center_layout.setSpacing(10)  # Espaço entre os grupos
         
-        # Configurações de processamento
-        config_group = QWidget()
-        config_layout = QVBoxLayout()
+        # 1. Grupo de Processamento de Imagens
+        image_group = QGroupBox("1. Image Processing")
+        image_group.setMinimumHeight(150)  # Altura mínima fixa
+        image_layout = QVBoxLayout()
         
-        # Tamanho do crop
-        crop_widget = QWidget()
-        crop_layout = QHBoxLayout()
-        crop_layout.addWidget(QLabel("Crop Size:"))
+        # Configurações de tamanho
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("Target Size:"))
         self.crop_width = QSpinBox()
         self.crop_width.setRange(64, 2048)
         self.crop_width.setValue(512)
         self.crop_height = QSpinBox()
         self.crop_height.setRange(64, 2048)
         self.crop_height.setValue(512)
-        crop_layout.addWidget(self.crop_width)
-        crop_layout.addWidget(QLabel("x"))
-        crop_layout.addWidget(self.crop_height)
-        crop_widget.setLayout(crop_layout)
-        config_layout.addWidget(crop_widget)
+        size_layout.addWidget(self.crop_width)
+        size_layout.addWidget(QLabel("x"))
+        size_layout.addWidget(self.crop_height)
+        image_layout.addLayout(size_layout)
         
         # Face detection toggle
         self.face_detection = QPushButton("Face Detection: ON")
         self.face_detection.setCheckable(True)
         self.face_detection.setChecked(True)
         self.face_detection.clicked.connect(self.toggle_face_detection)
-        config_layout.addWidget(self.face_detection)
+        image_layout.addWidget(self.face_detection)
         
-        config_group.setLayout(config_layout)
-        right_layout.addWidget(config_group)
+        # Botão de processamento
+        process_button = QPushButton("Process Images")
+        process_button.clicked.connect(self.process_images)
+        image_layout.addWidget(process_button)
         
-        # Status e informações
+        image_group.setLayout(image_layout)
+        center_layout.addWidget(image_group)
+        
+        # 2. Grupo de Geração de Captions
+        caption_group = QGroupBox("2. Caption Generation")
+        caption_group.setMinimumHeight(100)  # Menor que o grupo de processamento
+        caption_layout = QVBoxLayout()
+        caption_layout.setContentsMargins(10, 15, 10, 15)  # Margens internas
+        
+        generate_captions_btn = QPushButton("Generate Captions")
+        generate_captions_btn.clicked.connect(self.generate_captions)
+        caption_layout.addWidget(generate_captions_btn)
+        
+        caption_group.setLayout(caption_layout)
+        center_layout.addWidget(caption_group)
+        
+        # 3. Grupo de Configuração do Dataset
+        dataset_group = QGroupBox("3. Dataset Configuration")
+        dataset_group.setMinimumHeight(100)  # Mesmo tamanho do grupo de captions
+        dataset_layout = QVBoxLayout()
+        dataset_layout.setContentsMargins(10, 15, 10, 15)  # Margens internas
+        
+        generate_toml_btn = QPushButton("Generate dataset.toml")
+        generate_toml_btn.clicked.connect(self.generate_toml)
+        dataset_layout.addWidget(generate_toml_btn)
+        
+        dataset_group.setLayout(dataset_layout)
+        center_layout.addWidget(dataset_group)
+        
+        # 4. Grupo de Utilitários
+        utils_group = QGroupBox("Utilities")
+        utils_group.setMinimumHeight(120)  # Um pouco maior por ter mais botões
+        utils_layout = QVBoxLayout()
+        utils_layout.setContentsMargins(10, 15, 10, 15)  # Margens internas
+        utils_layout.setSpacing(8)  # Espaço entre os botões
+        
+        rename_convert_btn = QPushButton("Rename and Convert Images")
+        rename_convert_btn.clicked.connect(self.rename_and_convert_images)
+        utils_layout.addWidget(rename_convert_btn)
+        
+        analyze_btn = QPushButton("Analyze Dataset")
+        analyze_btn.clicked.connect(self.analyze_dataset)
+        utils_layout.addWidget(analyze_btn)
+        
+        utils_group.setLayout(utils_layout)
+        center_layout.addWidget(utils_group)
+        
+        # Status
+        status_group = QGroupBox("Status")
+        status_layout = QVBoxLayout()
         self.status_label = QLabel("No dataset selected")
-        right_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.status_label)
+        status_group.setLayout(status_layout)
+        center_layout.addWidget(status_group)
         
-        # Adiciona expansor para empurrar widgets para cima
-        right_layout.addStretch()
+        center_panel.setLayout(center_layout)
         
-        right_panel.setLayout(right_layout)
+        # Painel direito - Widgets de treinamento
+        self.training_widgets = TrainingWidgets()
+        self.training_widgets.train_button.clicked.connect(self.start_training)
         
-        # Define proporção dos painéis (70/30)
-        layout.addWidget(left_panel, 70)
-        layout.addWidget(right_panel, 30)
+        # Define proporção dos painéis (25/40/35)
+        layout.addWidget(left_panel, 25)
+        layout.addWidget(center_panel, 10)
+        layout.addWidget(self.training_widgets, 20)
         
         central_widget.setLayout(layout)
-
-    def rename_and_convert_images(self):
-        if not self.dataset_path:
-            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
-            return
-
-        # Abre o diálogo para obter o sufixo
-        dialog = SuffixInputDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        suffix = dialog.get_suffix()
-        if not suffix:
-            QMessageBox.warning(self, "Warning", "Suffix cannot be empty!")
-            return
-
-        # Diretório com as imagens
-        image_dir = self.dataset_path / "cropped_images"
-        if not image_dir.exists():
-            QMessageBox.warning(self, "Warning", "Cropped images directory does not exist!")
-            return
-
-        # Processa imagens
-        image_files = list(image_dir.glob("*.[jp][pn][g]")) + list(image_dir.glob("*.webp"))
-        if not image_files:
-            QMessageBox.warning(self, "Warning", "No images found to rename and convert!")
-            return
-
-        converted_count = 0
-
-        for idx, image_path in enumerate(sorted(image_files), 1):
-            try:
-                # Novo nome com o sufixo
-                new_name = f"{image_path.stem}{suffix}_{str(idx).zfill(3)}.png"
-                new_path = image_dir / new_name
-
-                # Converte a imagem para PNG
-                with Image.open(image_path) as img:
-                    img = img.convert("RGB")  # Converte para RGB se necessário
-                    img.save(new_path, "PNG")
-
-                # Remove a imagem original se for diferente do novo formato
-                if image_path.suffix.lower() != ".png":
-                    image_path.unlink()
-
-                converted_count += 1
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Failed to process {image_path.name}: {e}")
-
-        QMessageBox.information(self, "Success", f"Renamed and converted {converted_count} images successfully!")
-        
-        # Atualiza a árvore
-        self.tree_model.clear()
-        self.populate_tree_view(self.dataset_path)
-
-
-
-    def select_dataset_folder(self):
-        """Seleciona a pasta do dataset"""
-        folder = QFileDialog.getExistingDirectory(self, "Select Dataset Folder")
-        if folder:
-            # Garante que temos o caminho absoluto
-            self.dataset_path = Path(folder).absolute()
-            print(f"Dataset path selecionado: {self.dataset_path}")
-            
-            self.populate_tree_view(self.dataset_path)
-            self.update_status()
-
-
-    def show_context_menu(self, position):
-        """Mostra menu de contexto com operações disponíveis"""
-        if not self.dataset_path:
-            return
-            
-        menu = QMenu()
-
-        menu.addSeparator()  # Adiciona separador
-        train_action = QAction("Start Training", self)
-        train_action.triggered.connect(self.show_training_config)
-        menu.addAction(train_action)
-        
-        # Adiciona ações ao menu
-        process_action = QAction("Process Images", self)
-        process_action.triggered.connect(self.process_images)
-        menu.addAction(process_action)
-        
-        generate_captions = QAction("Generate Captions", self)
-        generate_captions.triggered.connect(self.generate_captions)
-        menu.addAction(generate_captions)
-        
-        generate_toml = QAction("Generate dataset.toml", self)
-        generate_toml.triggered.connect(self.generate_toml)
-        menu.addAction(generate_toml)
-        
-        analyze = QAction("Analyze Dataset", self)
-        analyze.triggered.connect(self.analyze_dataset)
-        menu.addAction(analyze)
-        
-        rename_convert_action = QAction("Rename and Convert Images", self)
-        rename_convert_action.triggered.connect(self.rename_and_convert_images)
-        menu.addAction(rename_convert_action)
-
-        process_action.triggered.connect(self.process_images)
-
-        # Mostra menu
-        menu.exec(self.tree_view.viewport().mapToGlobal(position))
-
-
-    def show_training_config(self):
-        """Mostra diálogo de configuração do treinamento"""
-        if not self.dataset_path:
-            return
-            
-        # Verifica se dataset.toml existe
-        toml_path = self.dataset_path / "cropped_images/dataset.toml"
-        if not toml_path.exists():
-            QMessageBox.warning(self, "Warning", "Please generate dataset.toml first!")
-            return
-        
-        dialog = TrainingConfigDialog(self.dataset_path, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Gera comando
-            command = dialog.get_command()
-            
-            # Mostra comando para confirmação
-            msg = QMessageBox()
-            msg.setWindowTitle("Training Command")
-            msg.setText("The following command will be executed:")
-            msg.setDetailedText(command)
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-            
-            if msg.exec() == QMessageBox.StandardButton.Ok:
-                try:
-                    # TODO: Executar comando
-                    # Por enquanto só mostra que seria executado
-                    QMessageBox.information(self, "Training", "Training command would be executed here.")
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Error starting training: {str(e)}")
-
-    def populate_tree_view(self, path):
-        """Popula a TreeView com a estrutura do dataset"""
-        self.tree_model.clear()
-        self.tree_model.setHorizontalHeaderLabels(['Dataset Structure'])
-        
-        # Cria item raiz
-        root_item = QStandardItem(str(path))
-        self.tree_model.appendRow(root_item)
-        
-        # Função recursiva para adicionar arquivos e pastas
-        def add_directory_contents(parent_item, dir_path):
-            try:
-                for item_path in sorted(Path(dir_path).iterdir()):
-                    item = QStandardItem(item_path.name)
-                    parent_item.appendRow(item)
-                    
-                    # Se for diretório, processa recursivamente
-                    if item_path.is_dir():
-                        add_directory_contents(item, item_path)
-            except Exception as e:
-                print(f"Erro ao acessar {dir_path}: {e}")
-        
-        # Popula a árvore
-        add_directory_contents(root_item, path)
-        
-        # Expande todos os níveis
-        self.tree_view.expandAll()
 
     def toggle_face_detection(self):
         """Alterna detecção facial"""
@@ -389,24 +278,52 @@ class DatasetManagerGUI(QMainWindow):
             self.face_detection.setText("Face Detection: ON")
         else:
             self.face_detection.setText("Face Detection: OFF")
+            
+    def select_dataset_folder(self):
+        """Seleciona a pasta do dataset"""
+        folder = QFileDialog.getExistingDirectory(self, "Select Dataset Folder")
+        if folder:
+            self.dataset_path = Path(folder).absolute()
+            self.populate_tree_view(self.dataset_path)
+            self.update_status()
+
+    def populate_tree_view(self, path):
+        """Popula a TreeView com a estrutura do dataset"""
+        self.tree_model.clear()
+        self.tree_model.setHorizontalHeaderLabels(['Dataset Structure'])
+        
+        root_item = QStandardItem(str(path))
+        self.tree_model.appendRow(root_item)
+        
+        def add_directory_contents(parent_item, dir_path):
+            try:
+                for item_path in sorted(Path(dir_path).iterdir()):
+                    item = QStandardItem(item_path.name)
+                    parent_item.appendRow(item)
+                    
+                    if item_path.is_dir():
+                        add_directory_contents(item, item_path)
+            except Exception as e:
+                print(f"Erro ao acessar {dir_path}: {e}")
+        
+        add_directory_contents(root_item, path)
+        self.tree_view.expandAll()
 
     def process_images(self):
         """Processa imagens do dataset"""
         if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
             
         try:
-            # Prepara diretórios - usando o próprio dataset_path como input
-            input_dir = self.dataset_path  # <-- Aqui está a correção
+            input_dir = self.dataset_path
             output_dir = self.dataset_path / "cropped_images"
             
-            # Conta arquivos para a barra de progresso
             n_files = sum(1 for _ in input_dir.glob("*.[jp][pn][g]"))
             if n_files == 0:
                 QMessageBox.warning(self, "Warning", "No images found in the input directory!")
                 return
             
-            # Processa imagens
             target_size = (self.crop_width.value(), self.crop_height.value())
             self.image_processor.use_face_detection = self.face_detection.isChecked()
             
@@ -414,13 +331,9 @@ class DatasetManagerGUI(QMainWindow):
                 input_dir, output_dir, target_size
             )
             
-            # Mostra resultado
             QMessageBox.information(self, "Success", 
-                f"Processing complete!\n\n"
-                f"Successfully processed: {processed}\n"
-                f"Failed: {failed}")
+                f"Processing complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
             
-            # Força uma atualização completa da árvore
             self.tree_model.clear()
             self.populate_tree_view(self.dataset_path)
             self.tree_view.expandAll()
@@ -429,33 +342,29 @@ class DatasetManagerGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error processing images: {str(e)}")
 
-
     def generate_captions(self):
         """Gera captions para as imagens"""
         if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
             
         try:
-            # Verifica se existe pasta cropped_images
             cropped_dir = self.dataset_path / "cropped_images"
             if not cropped_dir.exists():
                 QMessageBox.warning(self, "Warning", "Please process images first!")
                 return
             
-            # Verifica se tem imagens para processar
             n_files = sum(1 for _ in cropped_dir.glob("*.[jp][pn][g]"))
             if n_files == 0:
                 QMessageBox.warning(self, "Warning", "No images found in cropped_images folder!")
                 return
             
-            # Pede configuração do caption
             config_dialog = CaptionConfigDialog(self)
             if config_dialog.exec() != QDialog.DialogCode.Accepted:
                 return
                 
             config = config_dialog.get_values()
             
-            # Cria e configura barra de progresso
             progress = QProgressDialog("Generating captions...", "Cancel", 0, 100, self)
             progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.setAutoClose(True)
@@ -466,10 +375,7 @@ class DatasetManagerGUI(QMainWindow):
                     progress.setLabelText(message)
                     progress.setValue(value)
             
-            # Cria pasta de captions dentro de cropped_images
             captions_dir = cropped_dir / "captions"
-            
-            # Processa imagens
             caption_generator = CaptionGenerator()
             processed, failed = caption_generator.process_directory(
                 cropped_dir, 
@@ -480,13 +386,9 @@ class DatasetManagerGUI(QMainWindow):
             
             progress.close()
             
-            # Mostra resultado
             QMessageBox.information(self, "Success", 
-                f"Caption generation complete!\n\n"
-                f"Successfully processed: {processed}\n"
-                f"Failed: {failed}")
+                f"Caption generation complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
             
-            # Atualiza visualização
             self.tree_model.clear()
             self.populate_tree_view(self.dataset_path)
             self.tree_view.expandAll()
@@ -498,19 +400,17 @@ class DatasetManagerGUI(QMainWindow):
     def generate_toml(self):
         """Gera o arquivo dataset.toml"""
         if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
         
         try:
-            # Abre diálogo de configuração
             dialog = TomlConfigDialog(self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 config = dialog.get_values()
                 
-                # Cria pasta cropped_images se não existir
                 cropped_dir = self.dataset_path / "cropped_images"
                 cropped_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Prepara dados do TOML
                 toml_data = {
                     "general": {
                         "shuffle_caption": False,
@@ -522,15 +422,13 @@ class DatasetManagerGUI(QMainWindow):
                         "batch_size": 1,
                         "keep_tokens": 1,
                         "subsets": [{
-                            # Corrigindo o caminho do image_dir
-                            "image_dir": str(cropped_dir.resolve()),  # Caminho absoluto
+                            "image_dir": str(cropped_dir.resolve()),
                             "class_tokens": config['class_tokens'],
                             "num_repeats": config['num_repeats']
                         }]
                     }]
                 }
                 
-                # Salva arquivo TOML dentro de cropped_images
                 toml_path = cropped_dir / "dataset.toml"
                 with open(toml_path, "w", encoding="utf-8") as f:
                     toml.dump(toml_data, f)
@@ -543,31 +441,55 @@ class DatasetManagerGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error generating dataset.toml: {str(e)}")
 
+    def rename_and_convert_images(self):
+        if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
+            return
 
-    def update_status(self):
-        """Atualiza o label de status com informações do dataset atual"""
-        if self.dataset_path:
-            status_text = f"Dataset: {self.dataset_path}"
-            
-            # Conta arquivos nas pastas relevantes
-            cropped_path = self.dataset_path / "cropped_images"
-            captions_path = self.dataset_path / "cropped_images/captions"
-            
-            if cropped_path.exists():
-                n_images = len(list(cropped_path.glob("*.[jp][pn][g]")))
-                status_text += f"\nImages: {n_images}"
-            
-            if captions_path.exists():
-                n_captions = len(list(captions_path.glob("*.txt")))
-                status_text += f"\nCaptions: {n_captions}"
-                
-            self.status_label.setText(status_text)
-        else:
-            self.status_label.setText("No dataset selected")
+        dialog = SuffixInputDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        suffix = dialog.get_suffix()
+        if not suffix:
+            QMessageBox.warning(self, "Warning", "Suffix cannot be empty!")
+            return
+
+        image_dir = self.dataset_path / "cropped_images"
+        if not image_dir.exists():
+            QMessageBox.warning(self, "Warning", "Cropped images directory does not exist!")
+            return
+
+        image_files = list(image_dir.glob("*.[jp][pn][g]")) + list(image_dir.glob("*.webp"))
+        if not image_files:
+            QMessageBox.warning(self, "Warning", "No images found to rename and convert!")
+            return
+
+        converted_count = 0
+
+        for idx, image_path in enumerate(sorted(image_files), 1):
+            try:
+                new_name = f"{image_path.stem}{suffix}_{str(idx).zfill(3)}.png"
+                new_path = image_dir / new_name
+
+                with Image.open(image_path) as img:
+                    img = img.convert("RGB")
+                    img.save(new_path, "PNG")
+
+                if image_path.suffix.lower() != ".png":
+                    image_path.unlink()
+
+                converted_count += 1
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to process {image_path.name}: {e}")
+
+        QMessageBox.information(self, "Success", f"Renamed and converted {converted_count} images successfully!")
+        self.tree_model.clear()
+        self.populate_tree_view(self.dataset_path)
 
     def analyze_dataset(self):
         """Analisa estado atual do dataset"""
         if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
             
         try:
@@ -597,9 +519,9 @@ class DatasetManagerGUI(QMainWindow):
             # Prepara mensagem
             msg = f"""Dataset Analysis:
 
-    Total Images: {stats['total_images']}
-    Total Captions: {stats['total_captions']}
-    Missing Captions: {len(stats['missing_captions'])}"""
+Total Images: {stats['total_images']}
+Total Captions: {stats['total_captions']}
+Missing Captions: {len(stats['missing_captions'])}"""
 
             if stats["missing_captions"]:
                 msg += "\n\nFiles missing captions:"
@@ -613,6 +535,58 @@ class DatasetManagerGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error analyzing dataset: {str(e)}")
 
+    def update_status(self):
+        """Atualiza o label de status com informações do dataset atual"""
+        if self.dataset_path:
+            status_text = f"Dataset: {self.dataset_path}"
+            
+            # Conta arquivos nas pastas relevantes
+            cropped_path = self.dataset_path / "cropped_images"
+            captions_path = self.dataset_path / "cropped_images/captions"
+            
+            if cropped_path.exists():
+                n_images = len(list(cropped_path.glob("*.[jp][pn][g]")))
+                status_text += f"\nImages: {n_images}"
+            
+            if captions_path.exists():
+                n_captions = len(list(captions_path.glob("*.txt")))
+                status_text += f"\nCaptions: {n_captions}"
+                
+            self.status_label.setText(status_text)
+        else:
+            self.status_label.setText("No dataset selected")
+
+    def start_training(self):
+        """Inicia o treinamento com as configurações atuais"""
+        if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
+            return
+            
+        # Verifica se dataset.toml existe
+        toml_path = self.dataset_path / "cropped_images/dataset.toml"
+        if not toml_path.exists():
+            QMessageBox.warning(self, "Warning", "Please generate dataset.toml first!")
+            return
+            
+        try:
+            # Salva configuração atual
+            self.training_widgets.save_current_config()
+            
+            # Gera e mostra comando
+            command = self.training_widgets.get_command(self.dataset_path)
+            msg = QMessageBox()
+            msg.setWindowTitle("Training Command")
+            msg.setText("The following command will be executed:")
+            msg.setDetailedText(command)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            
+            if msg.exec() == QMessageBox.StandardButton.Ok:
+                # Executa treinamento
+                output_dialog = CommandOutputDialog(command, self)
+                output_dialog.exec()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error starting training: {str(e)}")
 
 def main():
     app = QApplication(sys.argv)

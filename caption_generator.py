@@ -8,11 +8,17 @@ import gc
 from unittest.mock import patch
 from transformers.dynamic_module_utils import get_imports
 import warnings
-import transformers.utils.hub
+import transformers
+transformers.utils.TRUST_REMOTE_CODE = True
+
 
 # Monkey patch a função de verificação do transformers para sempre retornar True
 def _always_true(*args, **kwargs):
     return True
+
+transformers.utils.hub._is_true = _always_true
+transformers.utils.hub.is_remote_url = _always_true
+transformers.utils.hub.has_file = _always_true
 
 # Substituir a função original
 transformers.utils.hub._is_true = _always_true
