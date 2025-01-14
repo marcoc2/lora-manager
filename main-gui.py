@@ -13,8 +13,9 @@ from PyQt6.QtCore import Qt, QProcess
 
 from image_processor import ImageProcessor
 from caption_generator import CaptionGenerator
-from training_widgets import TrainingWidgets, CommandOutputDialog
+from training_widgets import CommandOutputDialog
 from dialogs import TomlConfigDialog, CaptionConfigDialog, ProcessProgressDialog, SuffixInputDialog
+from training_tabs import TrainingTabs
 
 
 class SuffixInputDialog(QDialog):
@@ -262,13 +263,13 @@ class DatasetManagerGUI(QMainWindow):
         center_panel.setLayout(center_layout)
         
         # Painel direito - Widgets de treinamento
-        self.training_widgets = TrainingWidgets()
-        self.training_widgets.train_button.clicked.connect(self.start_training)
+        self.training_tabs = TrainingTabs()
+        #self.training_widgets.train_button.clicked.connect(self.start_training)
         
         # Define proporção dos painéis (25/40/35)
         layout.addWidget(left_panel, 25)
         layout.addWidget(center_panel, 10)
-        layout.addWidget(self.training_widgets, 20)
+        layout.addWidget(self.training_tabs, 20)
         
         central_widget.setLayout(layout)
 
@@ -561,19 +562,16 @@ Missing Captions: {len(stats['missing_captions'])}"""
         if not self.dataset_path:
             QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
-            
-        # Verifica se dataset.toml existe
-        toml_path = self.dataset_path / "cropped_images/dataset.toml"
-        if not toml_path.exists():
-            QMessageBox.warning(self, "Warning", "Please generate dataset.toml first!")
-            return
-            
+        
         try:
             # Salva configuração atual
-            self.training_widgets.save_current_config()
+            self.training_tabs.save_config()
             
             # Gera e mostra comando
-            command = self.training_widgets.get_command(self.dataset_path)
+            command = self.training_tabs.get_command(self.dataset_path)
+            if command is None:
+                return
+            
             msg = QMessageBox()
             msg.setWindowTitle("Training Command")
             msg.setText("The following command will be executed:")
