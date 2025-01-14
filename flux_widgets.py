@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                             QFormLayout, QLineEdit, QPushButton, QSpinBox,
                             QCheckBox, QFileDialog, QLabel)
+from PyQt6.QtCore import Qt
 from pathlib import Path
 import json
 
@@ -68,6 +69,33 @@ class FluxTrainingWidgets(QWidget):
         
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
+
+        # Resume Training
+        resume_group = QGroupBox("Resume Training")
+        resume_layout = QFormLayout()
+        
+        self.resume_checkbox = QCheckBox("Resume from checkpoint")
+        self.resume_path = QLineEdit()
+        self.resume_path.setEnabled(False)
+        self.resume_path.setPlaceholderText("Path to checkpoint folder")
+        select_resume = QPushButton("Browse")
+        select_resume.setEnabled(False)
+        
+        resume_path_layout = QHBoxLayout()
+        resume_path_layout.addWidget(self.resume_path)
+        resume_path_layout.addWidget(select_resume)
+        
+        resume_layout.addRow(self.resume_checkbox)
+        resume_layout.addRow("Checkpoint:", resume_path_layout)
+        
+        self.resume_checkbox.stateChanged.connect(lambda state: [
+            self.resume_path.setEnabled(state == Qt.CheckState.Checked.value),
+            select_resume.setEnabled(state == Qt.CheckState.Checked.value)
+        ])
+        select_resume.clicked.connect(self.select_resume_path)
+        
+        resume_group.setLayout(resume_layout)
+        layout.addWidget(resume_group)
 
         # Flux Parameters
         flux_group = QGroupBox("Flux Parameters")
@@ -183,6 +211,11 @@ class FluxTrainingWidgets(QWidget):
             self.t5xxl_path.setText(path)
             self.save_current_config()
 
+    def select_resume_path(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Checkpoint Directory")
+        if path:
+            self.resume_path.setText(path)
+
     def save_current_config(self):
         """Salva a configuração atual no arquivo JSON"""
         config = {
@@ -230,5 +263,10 @@ class FluxTrainingWidgets(QWidget):
             f"--seed {self.seed.value()}",
             f"--dataset_config {dataset_config}"
         ]
+
+        # Adiciona opção de resume se marcado
+        if self.resume_checkbox.isChecked() and self.resume_path.text().strip():
+            resume_path = self.resume_path.text().strip()
+            cmd.append(f"--resume {resume_path}")
 
         return " ".join(filter(None, cmd))
