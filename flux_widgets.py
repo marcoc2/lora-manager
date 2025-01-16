@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
 from PyQt6.QtCore import Qt
 from pathlib import Path
 import json
+from command_utils import CommandOutputDialog, ScriptManager
 
 CONFIG_FILE = "flux_config.json"
 
@@ -21,6 +22,7 @@ class FluxTrainingWidgets(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = load_config()
+        self.script_manager = ScriptManager()
         
         # Criar QScrollArea
         scroll = QScrollArea()
@@ -43,7 +45,6 @@ class FluxTrainingWidgets(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        # Remover referência ao layout principal, agora usamos self.control_layout
         layout = self.control_layout
         layout.setSpacing(10)
 
@@ -208,7 +209,7 @@ class FluxTrainingWidgets(QWidget):
         cache_layout.addRow("Persistent Data Loader Workers:", self.persistent_workers)
 
         self.max_workers = QSpinBox()
-        self.max_workers.setRange(0, 16)
+        self.max_workers.setRange(1, 16)
         self.max_workers.setValue(self.config.get("max_workers", 2))
         cache_layout.addRow("Max Data Loader Workers:", self.max_workers)
 
@@ -223,6 +224,26 @@ class FluxTrainingWidgets(QWidget):
 
         cache_group.setLayout(cache_layout)
         layout.addWidget(cache_group)
+
+        # Network Configuration
+        network_group = QGroupBox("Network Configuration")
+        network_layout = QFormLayout()
+
+        self.network_dim = QSpinBox()
+        self.network_dim.setRange(1, 128)
+        self.network_dim.setValue(self.config.get("network_dim", 32))
+        network_layout.addRow("Network Dimension:", self.network_dim)
+
+        self.network_alpha = QSpinBox()
+        self.network_alpha.setRange(1, 128)
+        self.network_alpha.setValue(self.config.get("network_alpha", 16))
+        network_layout.addRow("Network Alpha:", self.network_alpha)
+
+        self.network_args = QLineEdit(self.config.get("network_args", "train_blocks=single"))
+        network_layout.addRow("Network Arguments:", self.network_args)
+
+        network_group.setLayout(network_layout)
+        layout.addWidget(network_group)
 
         # Output Configuration
         output_group = QGroupBox("Output Configuration")
@@ -250,26 +271,6 @@ class FluxTrainingWidgets(QWidget):
 
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
-
-        # Network Configuration
-        network_group = QGroupBox("Network Configuration")
-        network_layout = QFormLayout()
-
-        self.network_dim = QSpinBox()
-        self.network_dim.setRange(1, 128)
-        self.network_dim.setValue(self.config.get("network_dim", 32))
-        network_layout.addRow("Network Dimension:", self.network_dim)
-
-        self.network_alpha = QSpinBox()
-        self.network_alpha.setRange(1, 128)
-        self.network_alpha.setValue(self.config.get("network_alpha", 16))
-        network_layout.addRow("Network Alpha:", self.network_alpha)
-
-        self.network_args = QLineEdit(self.config.get("network_args", "train_blocks=single"))
-        network_layout.addRow("Network Arguments:", self.network_args)
-
-        network_group.setLayout(network_layout)
-        layout.addWidget(network_group)
 
         # Training Parameters
         training_group = QGroupBox("Training Parameters")
@@ -351,8 +352,6 @@ class FluxTrainingWidgets(QWidget):
         self.train_button = QPushButton("Start Training")
         layout.addWidget(self.train_button)
 
-
-
     def select_flux_path(self):
         path = QFileDialog.getOpenFileName(self, "Select Flux Model", 
                                          filter="Model files (*.safetensors)")[0]
@@ -398,15 +397,18 @@ class FluxTrainingWidgets(QWidget):
             self.output_dir.setText(path)
             self.save_current_config()
 
+    def cleanup_temp_files(self):
+        """Limpa arquivos temporários"""
+        self.script_manager.cleanup_temp_files()
+
     def save_current_config(self):
         """Salva a configuração atual no arquivo JSON"""
-        # ... Adicionar scripts_dir ao config
         config = {
             "flux_path": self.flux_path.text(),
             "clip_l_path": self.clip_l_path.text(),
             "t5xxl_path": self.t5xxl_path.text(),
             "ae_path": self.ae_path.text(),
-            "scripts_dir": self.scripts_dir.text(),  # Adicionado
+            "scripts_dir": self.scripts_dir.text(),
             "output_dir": self.output_dir.text(),
             "output_name": self.output_name.text(),
             "mixed_precision": self.mixed_precision.currentText(),
@@ -442,7 +444,9 @@ class FluxTrainingWidgets(QWidget):
         """Gera o comando de treinamento para o Flux"""
         dataset_config = dataset_path / "cropped_images/dataset.toml"
 
-        script_path = Path(self.scripts_dir.text()) / "flux_train_network.py"
+        original_script_path = Path(self.scripts_dir.text()) / "flux_train_network.py"
+        script_path = self.script_manager.create_temp_script(original_script_path)
+
         cmd = [
             "accelerate launch",
             "--mixed_precision", self.mixed_precision.currentText(),
@@ -486,13 +490,18 @@ class FluxTrainingWidgets(QWidget):
         # Adiciona optimizer args se houver
         optimizer_args = self.optimizer_args.text().strip()
         if optimizer_args:
-            cmd.append('--optimizer_args ' + ' '.join(f'"{arg}"' for arg in optimizer_args.split()))
-
+            # Cada argumento precisa ser passado individualmente
+            cmd.append('--optimizer_args')
+            for arg in optimizer_args.split():
+                cmd.append(arg)
 
         # Adiciona network args se houver
         network_args = self.network_args.text().strip()
         if network_args:
-            cmd.append(f'--network_args "{network_args}"')
+            # Cada argumento precisa ser passado individualmente
+            cmd.append('--network_args')
+            for arg in network_args.split():
+                cmd.append(arg)
 
         # Adiciona opção de resume se marcado
         if self.resume_checkbox.isChecked() and self.resume_path.text().strip():

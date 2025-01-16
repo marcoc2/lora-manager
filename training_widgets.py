@@ -1,13 +1,9 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                             QFormLayout, QLineEdit, QPushButton, QSpinBox,
-                            QCheckBox, QFileDialog, QLabel, QDialog, QTextEdit)
-from PyQt6.QtCore import QProcess
+                            QCheckBox, QFileDialog, QLabel)
 from pathlib import Path
 import json
-import tempfile
-import shutil
-import os
-import sys
+from command_utils import CommandOutputDialog, ScriptManager, format_command_args
 
 CONFIG_FILE = "training_config.json"
 
@@ -21,74 +17,12 @@ def save_config(config):
     with open(CONFIG_FILE, "w") as file:
         json.dump(config, file)
 
-class CommandOutputDialog(QDialog):
-    def __init__(self, command, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Training Output")
-        self.setMinimumSize(600, 400)
-        
-        self.command = command
-        self.process = QProcess(self)
-
-        # Layout
-        layout = QVBoxLayout()
-        self.text_output = QTextEdit()
-        self.text_output.setReadOnly(True)
-        layout.addWidget(self.text_output)
-        
-        self.close_button = QPushButton("Close")
-        self.close_button.setEnabled(False)
-        self.close_button.clicked.connect(self.close)
-        layout.addWidget(self.close_button)
-        
-        self.setLayout(layout)
-        
-        self.start_process()
-
-    def start_process(self):
-        """Inicia o subprocesso para rodar o comando"""
-        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self.process.readyReadStandardOutput.connect(self.read_output)
-        self.process.readyReadStandardError.connect(self.read_output)
-        self.process.finished.connect(self.process_finished)
-        
-        # Configurar ambiente para UTF-8
-        env = self.process.processEnvironment()
-        env.insert("PYTHONIOENCODING", "utf-8")
-        env.insert("PYTHONUTF8", "1")
-        self.process.setProcessEnvironment(env)
-        
-        # Divide o comando em partes para compatibilidade com QProcess
-        command_parts = self.command.split()
-        
-        # Deixa o comando do accelerate simples sem modificações
-        command_parts = self.command.split()
-        self.process.start(command_parts[0], command_parts[1:])
-
-    def read_output(self):
-        """Lê a saída do subprocesso e exibe no QTextEdit"""
-        output = self.process.readAllStandardOutput().data().decode()
-        self.text_output.append(output)
-        
-        error = self.process.readAllStandardError().data().decode()
-        if error:
-            self.text_output.append(f"ERROR: {error}")
-
-    def process_finished(self):
-        """Habilita o botão de fechamento quando o processo termina e limpa arquivos temporários"""
-        self.text_output.append("\nTraining finished.")
-        self.close_button.setEnabled(True)
-        
-        # Limpar arquivos temporários
-        if isinstance(self.parent(), TrainingWidgets):
-            self.parent().cleanup_temp_files()
-
 class TrainingWidgets(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = load_config()
+        self.script_manager = ScriptManager()
         self.init_ui()
-        self.temp_script_path = None
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -134,6 +68,9 @@ class TrainingWidgets(QWidget):
         self.network_alpha.setValue(self.config.get("network_alpha", 16))
         network_layout.addRow("Network Alpha:", self.network_alpha)
 
+        self.network_args = QLineEdit(self.config.get("network_args", ""))
+        network_layout.addRow("Network Arguments:", self.network_args)
+
         network_group.setLayout(network_layout)
         layout.addWidget(network_group)
 
@@ -159,6 +96,9 @@ class TrainingWidgets(QWidget):
         self.seed.setValue(self.config.get("seed", 42))
         training_layout.addRow("Seed:", self.seed)
 
+        self.optimizer_args = QLineEdit(self.config.get("optimizer_args", ""))
+        training_layout.addRow("Optimizer Arguments:", self.optimizer_args)
+
         training_group.setLayout(training_layout)
         layout.addWidget(training_group)
 
@@ -181,6 +121,18 @@ class TrainingWidgets(QWidget):
         self.sdpa = QCheckBox("SDPA")
         self.sdpa.setChecked(self.config.get("sdpa", True))
         advanced_layout.addWidget(self.sdpa)
+
+        self.persistent_workers = QCheckBox("Persistent Workers")
+        self.persistent_workers.setChecked(self.config.get("persistent_workers", False))
+        advanced_layout.addWidget(self.persistent_workers)
+
+        self.max_workers = QSpinBox()
+        self.max_workers.setRange(0, 16)
+        self.max_workers.setValue(self.config.get("max_workers", 2))
+        worker_layout = QHBoxLayout()
+        worker_layout.addWidget(QLabel("Max Workers:"))
+        worker_layout.addWidget(self.max_workers)
+        advanced_layout.addLayout(worker_layout)
 
         advanced_group.setLayout(advanced_layout)
         layout.addWidget(advanced_group)
@@ -216,68 +168,6 @@ class TrainingWidgets(QWidget):
 
         self.setLayout(layout)
 
-    def create_temp_script(self, original_script_path):
-        """
-        Cria uma versão temporária do script sem caracteres não-ASCII
-        e cria um wrapper para configurar UTF-8
-        """
-        # Criar diretório temporário se não existir
-        temp_dir = Path(tempfile.gettempdir()) / "temp_training_scripts"
-        temp_dir.mkdir(exist_ok=True)
-        
-        # Criar nomes para os arquivos temporários
-        temp_script = temp_dir / f"temp_{os.path.basename(original_script_path)}"
-        wrapper_script = temp_dir / f"wrapper_{os.path.basename(original_script_path)}"
-        
-        try:
-            # Ler arquivo original
-            with open(original_script_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Substituir caracteres não-ASCII
-            ascii_content = ''.join(char if ord(char) < 128 else '' for char in content)
-            
-            # Escrever versão limpa no arquivo temporário
-            with open(temp_script, 'w', encoding='utf-8') as f:
-                f.write(ascii_content)
-            
-            # Criar script wrapper
-            wrapper_content = f"""import sys
-import os
-
-# Configurar UTF-8
-if sys.platform.startswith('win'):
-    import locale
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
-    os.environ["PYTHONIOENCODING"] = "utf-8"
-
-# Importar e executar o script principal
-script_path = r"{temp_script}"
-with open(script_path, 'r', encoding='utf-8') as f:
-    exec(f.read())
-"""
-            # Escrever wrapper
-            with open(wrapper_script, 'w', encoding='utf-8') as f:
-                f.write(wrapper_content)
-            
-            self.temp_script_path = str(wrapper_script)
-            return self.temp_script_path
-            
-        except Exception as e:
-            print(f"Erro ao criar script temporário: {e}")
-            return original_script_path
-
-    def cleanup_temp_files(self):
-        """Limpa arquivos temporários"""
-        temp_dir = Path(tempfile.gettempdir()) / "temp_training_scripts"
-        if temp_dir.exists():
-            try:
-                shutil.rmtree(temp_dir)
-                self.temp_script_path = None
-            except Exception as e:
-                print(f"Erro ao limpar arquivos temporários: {e}")
-
     def select_model_path(self):
         path = QFileDialog.getOpenFileName(self, "Select Base Model", 
                                          filter="Model files (*.safetensors)")[0]
@@ -297,6 +187,10 @@ with open(script_path, 'r', encoding='utf-8') as f:
             self.output_dir.setText(path)
             self.save_current_config()
 
+    def cleanup_temp_files(self):
+        """Limpa arquivos temporários"""
+        self.script_manager.cleanup_temp_files()
+
     def save_current_config(self):
         """Salva a configuração atual no arquivo JSON"""
         config = {
@@ -313,32 +207,31 @@ with open(script_path, 'r', encoding='utf-8') as f:
             "cache_latents": self.cache_latents.isChecked(),
             "cache_text_encoder": self.cache_text_encoder.isChecked(),
             "gradient_checkpointing": self.gradient_checkpointing.isChecked(),
-            "sdpa": self.sdpa.isChecked()
+            "sdpa": self.sdpa.isChecked(),
+            "persistent_workers": self.persistent_workers.isChecked(),
+            "max_workers": self.max_workers.value(),
+            "network_args": self.network_args.text(),
+            "optimizer_args": self.optimizer_args.text()
         }
         save_config(config)
 
     def get_command(self, dataset_path):
         """Gera o comando de treinamento com base nas configurações"""
-        # Forçar encoding UTF-8 no script original antes de criar temp
-        os.environ["PYTHONIOENCODING"] = "utf-8"
-        os.environ["PYTHONUTF8"] = "1"
-        os.environ["PYTHON_COMMAND"] = str(Path(sys.executable))
-        
-        original_script_path = Path(self.scripts_dir.text()) / "sdxl_train_network.py"
-        
-        # Criar versão temporária do script
-        script_path = self.create_temp_script(original_script_path)
         dataset_config = dataset_path / "cropped_images/dataset.toml"
+
+        original_script_path = Path(self.scripts_dir.text()) / "sdxl_train_network.py"
+        script_path = self.script_manager.create_temp_script(original_script_path)
 
         cmd = [
             "accelerate launch",
+            "--num_cpu_threads_per_process 1",
             str(script_path),
             f"--pretrained_model_name_or_path {self.model_path.text()}",
             "--cache_latents_to_disk" if self.cache_latents.isChecked() else "",
-            "--save_model_as safetensors",
+            f"--save_model_as safetensors",
             "--sdpa" if self.sdpa.isChecked() else "",
-            "--persistent_data_loader_workers",
-            "--max_data_loader_n_workers 2",
+            "--persistent_data_loader_workers" if self.persistent_workers.isChecked() and self.max_workers.value() > 0 else "",
+            f"--max_data_loader_n_workers {self.max_workers.value()}",
             f"--seed {self.seed.value()}",
             "--gradient_checkpointing" if self.gradient_checkpointing.isChecked() else "",
             "--mixed_precision bf16",
@@ -354,8 +247,23 @@ with open(script_path, 'r', encoding='utf-8') as f:
             f"--max_train_epochs {self.epochs.value()}",
             f"--save_every_n_epochs {self.save_every.value()}",
             f"--dataset_config {dataset_config}",
-            f"--output_dir {self.output_dir.text()}",
-            f"--output_name {self.output_name.text()}"
+            f"--output_dir {self.output_dir.text()}" if self.output_dir.text() else "",
+            f"--output_name {self.output_name.text()}" if self.output_name.text() else ""
         ]
 
-        return " ".join(filter(None, cmd))
+        # Adiciona optimizer args se houver
+        optimizer_args = self.optimizer_args.text().strip()
+        if optimizer_args:
+            cmd.append("--optimizer_args")
+            cmd.extend(format_command_args(optimizer_args))
+
+        # Adiciona network args se houver
+        network_args = self.network_args.text().strip()
+        if network_args:
+            cmd.append("--network_args")
+            cmd.extend(format_command_args(network_args))
+
+        filtered_cmd = filter(None, cmd)
+        # Converte os itens para string e filtra os vazios
+        cmd_str = " ".join(str(item) for item in filtered_cmd if str(item).strip())
+        return cmd_str
