@@ -5,6 +5,7 @@ from PyQt6.QtCore import QProcess, QTimer
 from pathlib import Path
 import json
 import subprocess
+import subprocess
 
 CONFIG_FILE = "training_config.json"
 
@@ -26,9 +27,7 @@ class CommandOutputDialog(QDialog):
         self.setMinimumSize(600, 400)
         
         self.command = command
-        self.process = QProcess(self)
 
-        # Layout
         layout = QVBoxLayout()
         self.text_output = QTextEdit()
         self.text_output.setReadOnly(True)
@@ -41,27 +40,88 @@ class CommandOutputDialog(QDialog):
         
         self.setLayout(layout)
         
-        self.start_process()
+        import threading
+        self.thread = threading.Thread(target=self.run_process)
+        self.thread.daemon = True
+        self.thread.start()
+
+
+
+    def run_process(self):
+        try:
+            # Subprocess em modo binário:
+            process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                shell=True,
+                universal_newlines=False  # não converte para texto automaticamente
+            )
+
+            def reader_thread():
+                while True:
+                    chunk = process.stdout.read(1024)
+                    if not chunk and process.poll() is not None:
+                        break
+                    if chunk:
+                        text = chunk.decode("utf-8", errors="replace")
+                        # Mande pro QTextEdit pela thread principal
+                        QTimer.singleShot(0, lambda t=text: self.append_text(t))
+
+                QTimer.singleShot(0, lambda: self.close_button.setEnabled(True))
+                QTimer.singleShot(0, lambda: self.append_text("\nTraining finished."))
+
+            t = threading.Thread(target=reader_thread, daemon=True)
+            t.start()
+
+        except Exception as e:
+            QTimer.singleShot(0, lambda: self.append_text(f"\nError: {str(e)}"))
+            QTimer.singleShot(0, lambda: self.close_button.setEnabled(True))
+
+
+    def append_text(self, text):
+        self.text_output.append(text.strip())
+        cursor = self.text_output.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.text_output.setTextCursor(cursor)
 
     def start_process(self):
         """Inicia o subprocesso para rodar o comando"""
-        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self.process.readyReadStandardOutput.connect(self.read_output)
-        self.process.readyReadStandardError.connect(self.read_output)
-        self.process.finished.connect(self.process_finished)
+        import subprocess
+        import threading
         
-        # Divide o comando em partes para compatibilidade com QProcess
-        command_parts = self.command.split()
-        self.process.start(command_parts[0], command_parts[1:])
+        def run_process():
+            process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                shell=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            for line in process.stdout:
+                self.text_output.append(line.strip())
+            
+            process.wait()
+            self.close_button.setEnabled(True)
+            self.text_output.append("\nTraining finished.")
+        
+        thread = threading.Thread(target=run_process)
+        thread.start()
 
-    def read_output(self):
-        """Lê a saída do subprocesso e exibe no QTextEdit"""
-        output = self.process.readAllStandardOutput().data().decode()
-        self.text_output.append(output)
-        
-        error = self.process.readAllStandardError().data().decode()
-        if error:
-            self.text_output.append(f"ERROR: {error}")
+    def handle_stdout(self):
+        """Lida com a saída padrão"""
+        data = self.process.readAllStandardOutput().data().decode()
+        if data:
+            self.text_output.append(data)
+
+    def handle_stderr(self):
+        """Lida com a saída de erro"""
+        data = self.process.readAllStandardError().data().decode()
+        if data:
+            self.text_output.append(f"ERROR: {data}")
 
     def process_finished(self):
         """Habilita o botão de fechamento quando o processo termina"""
@@ -272,10 +332,10 @@ class TrainingConfigDialog(QDialog):
         script_path = Path(self.scripts_dir.text()) / "sdxl_train_network.py"
         dataset_config = self.dataset_path / "cropped_images/dataset.toml"
 
-        cmd = [
+        cmd_parts = [
             "accelerate launch",
-            str(script_path),  # Use apenas o caminho diretamente
-            f"--pretrained_model_name_or_path {self.model_path.text()}",
+            f'"{script_path}"',  # Caminho do script entre aspas
+            f'--pretrained_model_name_or_path "{self.model_path.text()}"',  # Caminho do modelo entre aspas
             "--cache_latents_to_disk" if self.cache_latents.isChecked() else "",
             "--save_model_as safetensors",
             "--sdpa" if self.sdpa.isChecked() else "",
@@ -295,12 +355,10 @@ class TrainingConfigDialog(QDialog):
             "--cache_text_encoder_outputs_to_disk" if self.cache_text_encoder.isChecked() else "",
             f"--max_train_epochs {self.epochs.value()}",
             f"--save_every_n_epochs {self.save_every.value()}",
-            f"--dataset_config {dataset_config}",
-            f"--output_dir {self.output_dir.text()}",
-            f"--output_name {self.output_name.text()}"
+            f'--dataset_config "{dataset_config}"',  # Dataset config entre aspas
+            f'--output_dir "{self.output_dir.text()}"',  # Output dir entre aspas
+            f'--output_name "{self.output_name.text()}"'  # Output name entre aspas
         ]
 
-        # Filtra argumentos vazios e converte a lista para uma string
-        return " ".join(filter(None, cmd))
-
-
+        # Filtra argumentos vazios e junta em uma única string
+        return " ".join(filter(None, cmd_parts))

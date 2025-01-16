@@ -4,6 +4,10 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
 from PyQt6.QtCore import QProcess
 from pathlib import Path
 import json
+import tempfile
+import shutil
+import os
+import sys
 
 CONFIG_FILE = "training_config.json"
 
@@ -48,7 +52,16 @@ class CommandOutputDialog(QDialog):
         self.process.readyReadStandardError.connect(self.read_output)
         self.process.finished.connect(self.process_finished)
         
+        # Configurar ambiente para UTF-8
+        env = self.process.processEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONUTF8", "1")
+        self.process.setProcessEnvironment(env)
+        
         # Divide o comando em partes para compatibilidade com QProcess
+        command_parts = self.command.split()
+        
+        # Deixa o comando do accelerate simples sem modificações
         command_parts = self.command.split()
         self.process.start(command_parts[0], command_parts[1:])
 
@@ -62,15 +75,20 @@ class CommandOutputDialog(QDialog):
             self.text_output.append(f"ERROR: {error}")
 
     def process_finished(self):
-        """Habilita o botão de fechamento quando o processo termina"""
+        """Habilita o botão de fechamento quando o processo termina e limpa arquivos temporários"""
         self.text_output.append("\nTraining finished.")
         self.close_button.setEnabled(True)
+        
+        # Limpar arquivos temporários
+        if isinstance(self.parent(), TrainingWidgets):
+            self.parent().cleanup_temp_files()
 
 class TrainingWidgets(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = load_config()
         self.init_ui()
+        self.temp_script_path = None
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -198,6 +216,68 @@ class TrainingWidgets(QWidget):
 
         self.setLayout(layout)
 
+    def create_temp_script(self, original_script_path):
+        """
+        Cria uma versão temporária do script sem caracteres não-ASCII
+        e cria um wrapper para configurar UTF-8
+        """
+        # Criar diretório temporário se não existir
+        temp_dir = Path(tempfile.gettempdir()) / "temp_training_scripts"
+        temp_dir.mkdir(exist_ok=True)
+        
+        # Criar nomes para os arquivos temporários
+        temp_script = temp_dir / f"temp_{os.path.basename(original_script_path)}"
+        wrapper_script = temp_dir / f"wrapper_{os.path.basename(original_script_path)}"
+        
+        try:
+            # Ler arquivo original
+            with open(original_script_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Substituir caracteres não-ASCII
+            ascii_content = ''.join(char if ord(char) < 128 else '' for char in content)
+            
+            # Escrever versão limpa no arquivo temporário
+            with open(temp_script, 'w', encoding='utf-8') as f:
+                f.write(ascii_content)
+            
+            # Criar script wrapper
+            wrapper_content = f"""import sys
+import os
+
+# Configurar UTF-8
+if sys.platform.startswith('win'):
+    import locale
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
+# Importar e executar o script principal
+script_path = r"{temp_script}"
+with open(script_path, 'r', encoding='utf-8') as f:
+    exec(f.read())
+"""
+            # Escrever wrapper
+            with open(wrapper_script, 'w', encoding='utf-8') as f:
+                f.write(wrapper_content)
+            
+            self.temp_script_path = str(wrapper_script)
+            return self.temp_script_path
+            
+        except Exception as e:
+            print(f"Erro ao criar script temporário: {e}")
+            return original_script_path
+
+    def cleanup_temp_files(self):
+        """Limpa arquivos temporários"""
+        temp_dir = Path(tempfile.gettempdir()) / "temp_training_scripts"
+        if temp_dir.exists():
+            try:
+                shutil.rmtree(temp_dir)
+                self.temp_script_path = None
+            except Exception as e:
+                print(f"Erro ao limpar arquivos temporários: {e}")
+
     def select_model_path(self):
         path = QFileDialog.getOpenFileName(self, "Select Base Model", 
                                          filter="Model files (*.safetensors)")[0]
@@ -239,7 +319,15 @@ class TrainingWidgets(QWidget):
 
     def get_command(self, dataset_path):
         """Gera o comando de treinamento com base nas configurações"""
-        script_path = Path(self.scripts_dir.text()) / "sdxl_train_network.py"
+        # Forçar encoding UTF-8 no script original antes de criar temp
+        os.environ["PYTHONIOENCODING"] = "utf-8"
+        os.environ["PYTHONUTF8"] = "1"
+        os.environ["PYTHON_COMMAND"] = str(Path(sys.executable))
+        
+        original_script_path = Path(self.scripts_dir.text()) / "sdxl_train_network.py"
+        
+        # Criar versão temporária do script
+        script_path = self.create_temp_script(original_script_path)
         dataset_config = dataset_path / "cropped_images/dataset.toml"
 
         cmd = [
