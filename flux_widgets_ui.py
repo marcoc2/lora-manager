@@ -1,47 +1,13 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                            QFormLayout, QLineEdit, QPushButton, QSpinBox,
-                            QCheckBox, QFileDialog, QLabel, QComboBox, QScrollArea)
+from PyQt6.QtWidgets import (QHBoxLayout, QGroupBox, QFormLayout, QLineEdit, 
+                           QPushButton, QCheckBox, QFileDialog, QLabel, QComboBox,
+                           QVBoxLayout)  # Adicionado QVBoxLayout que estava faltando
 from PyQt6.QtCore import Qt
 from pathlib import Path
-import json
-from command_utils import CommandOutputDialog, ScriptManager
+from flux_widgets_base import FluxTrainingWidgetsBase, NoWheelSpinBox, save_config
 
-CONFIG_FILE = "flux_config.json"
-
-def load_config():
-    if Path(CONFIG_FILE).exists():
-        with open(CONFIG_FILE, "r") as file:
-            return json.load(file)
-    return {}
-
-def save_config(config):
-    with open(CONFIG_FILE, "w") as file:
-        json.dump(config, file)
-
-class FluxTrainingWidgets(QWidget):
+class FluxTrainingWidgets(FluxTrainingWidgetsBase):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.config = load_config()
-        self.script_manager = ScriptManager()
-        
-        # Criar QScrollArea
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        
-        # Criar widget para conter todos os controles
-        container = QWidget()
-        
-        # Layout principal para o container
-        main_layout = QVBoxLayout(self)
-        main_layout.addWidget(scroll)
-        
-        # Configurar o container como widget do scroll
-        scroll.setWidget(container)
-        
-        # Layout para os controles (será usado em init_ui)
-        self.control_layout = QVBoxLayout(container)
-        
         self.init_ui()
 
     def init_ui(self):
@@ -147,7 +113,7 @@ class FluxTrainingWidgets(QWidget):
         flux_group = QGroupBox("Flux Parameters")
         flux_layout = QFormLayout()
         
-        self.guidance_scale = QSpinBox()
+        self.guidance_scale = NoWheelSpinBox()
         self.guidance_scale.setRange(1, 20)
         self.guidance_scale.setValue(self.config.get("guidance_scale", 1))
         flux_layout.addRow("Guidance Scale:", self.guidance_scale)
@@ -160,7 +126,7 @@ class FluxTrainingWidgets(QWidget):
         self.apply_t5_attn_mask.setChecked(self.config.get("apply_t5_attn_mask", False))
         flux_layout.addRow("Apply T5 Attention Mask:", self.apply_t5_attn_mask)
 
-        self.t5xxl_max_token_length = QSpinBox()
+        self.t5xxl_max_token_length = NoWheelSpinBox()
         self.t5xxl_max_token_length.setRange(64, 1024)
         self.t5xxl_max_token_length.setValue(self.config.get("t5xxl_max_token_length", 256))
         flux_layout.addRow("T5XXL Max Token Length:", self.t5xxl_max_token_length)
@@ -172,7 +138,7 @@ class FluxTrainingWidgets(QWidget):
         memory_group = QGroupBox("Memory Optimization")
         memory_layout = QFormLayout()
         
-        self.blocks_to_swap = QSpinBox()
+        self.blocks_to_swap = NoWheelSpinBox()
         self.blocks_to_swap.setRange(0, 32)
         self.blocks_to_swap.setValue(self.config.get("blocks_to_swap", 0))
         memory_layout.addRow("Blocks to Swap:", self.blocks_to_swap)
@@ -208,7 +174,7 @@ class FluxTrainingWidgets(QWidget):
         self.persistent_workers.setChecked(self.config.get("persistent_workers", True))
         cache_layout.addRow("Persistent Data Loader Workers:", self.persistent_workers)
 
-        self.max_workers = QSpinBox()
+        self.max_workers = NoWheelSpinBox()
         self.max_workers.setRange(1, 16)
         self.max_workers.setValue(self.config.get("max_workers", 2))
         cache_layout.addRow("Max Data Loader Workers:", self.max_workers)
@@ -216,6 +182,10 @@ class FluxTrainingWidgets(QWidget):
         self.sdpa = QCheckBox()
         self.sdpa.setChecked(self.config.get("sdpa", True))
         cache_layout.addRow("SDPA:", self.sdpa)
+
+        self.flip_aug = QCheckBox()
+        self.flip_aug.setChecked(self.config.get("flip_aug", False))
+        cache_layout.addRow("Flip Augmentation:", self.flip_aug)
 
         self.save_model_as = QComboBox()
         self.save_model_as.addItems(["safetensors", "pt", "ckpt"])
@@ -229,12 +199,12 @@ class FluxTrainingWidgets(QWidget):
         network_group = QGroupBox("Network Configuration")
         network_layout = QFormLayout()
 
-        self.network_dim = QSpinBox()
+        self.network_dim = NoWheelSpinBox()
         self.network_dim.setRange(1, 128)
         self.network_dim.setValue(self.config.get("network_dim", 32))
         network_layout.addRow("Network Dimension:", self.network_dim)
 
-        self.network_alpha = QSpinBox()
+        self.network_alpha = NoWheelSpinBox()
         self.network_alpha.setRange(1, 128)
         self.network_alpha.setValue(self.config.get("network_alpha", 16))
         network_layout.addRow("Network Alpha:", self.network_alpha)
@@ -295,17 +265,17 @@ class FluxTrainingWidgets(QWidget):
         self.learning_rate = QLineEdit(self.config.get("learning_rate", "1e-4"))
         training_layout.addRow("Learning Rate:", self.learning_rate)
 
-        self.epochs = QSpinBox()
+        self.epochs = NoWheelSpinBox()
         self.epochs.setRange(1, 1000)
         self.epochs.setValue(self.config.get("epochs", 16))
         training_layout.addRow("Max Epochs:", self.epochs)
 
-        self.save_every = QSpinBox()
+        self.save_every = NoWheelSpinBox()
         self.save_every.setRange(1, 100)
         self.save_every.setValue(self.config.get("save_every", 8))
         training_layout.addRow("Save Every N Epochs:", self.save_every)
 
-        self.seed = QSpinBox()
+        self.seed = NoWheelSpinBox()
         self.seed.setRange(1, 999999)
         self.seed.setValue(self.config.get("seed", 42))
         training_layout.addRow("Seed:", self.seed)
@@ -347,6 +317,18 @@ class FluxTrainingWidgets(QWidget):
 
         training_group.setLayout(training_layout)
         layout.addWidget(training_group)
+
+        # Additional Parameters
+        params_group = QGroupBox("Additional Parameters")
+        params_layout = QVBoxLayout()
+        
+        self.additional_params = QLineEdit()
+        self.additional_params.setPlaceholderText("Additional command line parameters (e.g., --param1 value1 --param2 value2)")
+        self.additional_params.setText(self.config.get("additional_params", ""))
+        
+        params_layout.addWidget(self.additional_params)
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
 
         # Start Training button
         self.train_button = QPushButton("Start Training")
@@ -399,10 +381,6 @@ class FluxTrainingWidgets(QWidget):
             self.output_dir.setText(path)
             self.save_current_config()
 
-    def cleanup_temp_files(self):
-        """Limpa arquivos temporários"""
-        self.script_manager.cleanup_temp_files()
-
     def save_current_config(self):
         """Salva a configuração atual no arquivo JSON"""
         config = {
@@ -438,7 +416,9 @@ class FluxTrainingWidgets(QWidget):
             "save_model_as": self.save_model_as.currentText(),
             "network_dim": self.network_dim.value(),
             "network_alpha": self.network_alpha.value(),
-            "network_args": self.network_args.text()
+            "network_args": self.network_args.text(),
+            "flip_aug": self.flip_aug.isChecked(),
+            "additional_params": self.additional_params.text()
         }
         save_config(config)
 
@@ -475,6 +455,7 @@ class FluxTrainingWidgets(QWidget):
             "--network_train_unet_only" if self.network_train_unet_only.isChecked() else "",
             "--cache_text_encoder_outputs" if self.cache_text_encoder.isChecked() else "",
             "--cache_text_encoder_outputs_to_disk" if self.cache_text_encoder_disk.isChecked() else "",
+            "--flip_aug" if self.flip_aug.isChecked() else "",
             "--fp8_base" if self.fp8_base.isChecked() else "",
             "--highvram" if self.highvram.isChecked() else "",
             f"--max_train_epochs {self.epochs.value()}",
@@ -509,6 +490,11 @@ class FluxTrainingWidgets(QWidget):
         if self.resume_checkbox.isChecked() and self.resume_path.text().strip():
             resume_path = self.resume_path.text().strip()
             cmd.append(f"--network_weights {resume_path}")
+
+        # Adiciona parâmetros adicionais se houver
+        additional_params = self.additional_params.text().strip()
+        if additional_params:
+            cmd.extend(additional_params.split())
 
         filtered_cmd = filter(None, cmd)
         # Converte os itens para string e filtra os vazios

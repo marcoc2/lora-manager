@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 from pathlib import Path
-from PIL import Image
+from PIL import Image  # Pillow já suporta AVIF nativamente nas versões recentes
 from typing import Tuple, Optional, Callable
 
 class ImageProcessor:
@@ -36,6 +36,25 @@ class ImageProcessor:
           antes de fazer o crop
         """
         try:
+            # Debug info
+            if progress_callback:
+                progress_callback(f"Iniciando processamento de: {image_path}")
+                progress_callback(f"Formato do arquivo: {image_path.suffix}")
+            
+            # Verifica se é AVIF e tenta importar o plugin se necessário
+            if image_path.suffix.lower() == '.avif':
+                try:
+                    from pillow_avif import AvifImagePlugin
+                    if progress_callback:
+                        progress_callback("Plugin AVIF carregado com sucesso")
+                except ImportError as e:
+                    if progress_callback:
+                        progress_callback(f"Erro ao carregar plugin AVIF: {str(e)}")
+                    raise ImportError("Para processar imagens AVIF, instale: pip install pillow-avif-plugin")
+            
+            if progress_callback:
+                progress_callback("Tentando abrir a imagem...")
+                
             # Abre imagem com PIL
             with Image.open(image_path) as pil_image:
                 pil_image = pil_image.convert("RGB")
@@ -81,8 +100,12 @@ class ImageProcessor:
                 return True
 
         except Exception as e:
+            import traceback
             if progress_callback:
-                progress_callback(f"Error processing {image_path.name}: {str(e)}")
+                progress_callback(f"Erro ao processar {image_path.name}:")
+                progress_callback(f"Tipo do erro: {type(e).__name__}")
+                progress_callback(f"Mensagem de erro: {str(e)}")
+                progress_callback(f"Stack trace:\n{traceback.format_exc()}")
             return False
 
 
@@ -106,7 +129,7 @@ class ImageProcessor:
 
         # Lista todos os arquivos de imagem suportados
         image_files = []
-        for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp']:
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp', '*.avif']:  # Added AVIF extension
             image_files.extend(input_dir.glob(ext))
 
         if not image_files:
@@ -124,5 +147,3 @@ class ImageProcessor:
                 total_failed += 1
 
         return total_processed, total_failed
-
-

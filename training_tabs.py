@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                             QMessageBox)
 from training_widgets import TrainingWidgets
-from flux_widgets import FluxTrainingWidgets
+from flux_widgets_ui import FluxTrainingWidgets
 from queue_manager import QueueManager
 
 class TrainingTabs(QWidget):
@@ -33,7 +33,7 @@ class TrainingTabs(QWidget):
         self.queue_manager = QueueManager()
         
         # Add widgets to main layout
-        main_layout.addWidget(self.tabs, stretch=2)
+        main_layout.addWidget(self.tabs, stretch=1)
         main_layout.addWidget(self.queue_manager, stretch=1)
         
         self.setLayout(main_layout)
@@ -72,15 +72,19 @@ class TrainingTabs(QWidget):
             # Save current config
             self.flux_widget.save_current_config()
             
-            # Get command
-            command = self.flux_widget.get_command(self.parent.dataset_path)
+            # Get command, garantindo que cropped_images não está duplicado
+            dataset_path = self.parent.dataset_path
+            if str(dataset_path).endswith('cropped_images'):
+                dataset_path = dataset_path.parent
+            
+            command = self.flux_widget.get_command(dataset_path)
             if command is None:
                 return
                 
             # Add to queue
             output_name = self.flux_widget.output_name.text() or "flux_training"
             print(f"Queueing task: {output_name}")  # Debug print
-            self.queue_manager.add_task(command, self.parent.dataset_path, output_name)
+            self.queue_manager.add_task(command, dataset_path, output_name)
             QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
             
         except Exception as e:

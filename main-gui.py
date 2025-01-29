@@ -6,9 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QHBoxLayout, QTreeView, QGroupBox, QPushButton, 
                             QDialog, QMessageBox, QLabel, QSpinBox,
                             QFileDialog, QProgressDialog, QFormLayout, QLineEdit,
-                            QComboBox)
-from PyQt6.QtGui import QStandardItemModel, QStandardItem
-from PyQt6.QtCore import Qt, QProcess
+                            QComboBox, QTextEdit, QCheckBox)
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 from PyQt6.QtCore import Qt, QProcess
 
@@ -17,6 +15,7 @@ from training_widgets import CommandOutputDialog
 from dialogs import TomlConfigDialog, CaptionConfigDialog, ProcessProgressDialog, SuffixInputDialog
 from caption_generator import CaptionGenerator
 from danbooru_generator import DanbooruGenerator
+from janus_generator import JanusGenerator
 from training_tabs import TrainingTabs
 
 
@@ -108,7 +107,7 @@ class CaptionConfigDialog(QDialog):
         
         # Adiciona seleção do método
         self.method_combo = QComboBox()
-        self.method_combo.addItems(["Florence-2", "Danbooru"])
+        self.method_combo.addItems(["Florence-2", "Danbooru", "Janus-7B"])
         layout.addRow("Captioning Method:", self.method_combo)
         
         # Campo para prefixo
@@ -120,6 +119,17 @@ class CaptionConfigDialog(QDialog):
         self.model_combo.addItems(["vit", "swinv2", "convnext"])
         self.model_combo.setVisible(False)
         layout.addRow("Danbooru Model:", self.model_combo)
+        
+        # Para Janus-7B, adiciona campo de contexto e checkbox
+        self.janus_context = QTextEdit()
+        self.janus_context.setPlaceholderText("Enter additional context for Janus prompt (optional)")
+        self.janus_context.setMaximumHeight(100)
+        self.janus_context.setVisible(False)
+        layout.addRow("Janus Context:", self.janus_context)
+        
+        self.replace_prompt = QCheckBox("Replace Default Prompt")
+        self.replace_prompt.setVisible(False)
+        layout.addRow("", self.replace_prompt)
         
         # Conecta evento de mudança do método
         self.method_combo.currentTextChanged.connect(self.on_method_changed)
@@ -142,96 +152,28 @@ class CaptionConfigDialog(QDialog):
         self.setLayout(final_layout)
     
     def on_method_changed(self, text):
-        """Mostra/esconde opções específicas do Danbooru"""
+        """Mostra/esconde opções específicas de cada método"""
+        # Danbooru options
         self.model_combo.setVisible(text == "Danbooru")
+        
+        # Janus options
+        self.janus_context.setVisible(text == "Janus-7B")
+        self.replace_prompt.setVisible(text == "Janus-7B")
         
     def get_values(self):
         return {
             'method': self.method_combo.currentText(),
             'prefix': self.prefix.text(),
-            'model_type': self.model_combo.currentText() if self.method_combo.currentText() == "Danbooru" else None
+            'model_type': self.model_combo.currentText() if self.method_combo.currentText() == "Danbooru" else None,
+            'janus_context': self.janus_context.toPlainText() if self.method_combo.currentText() == "Janus-7B" else None,
+            'replace_prompt': self.replace_prompt.isChecked() if self.method_combo.currentText() == "Janus-7B" else False
         }
-
-# Na classe DatasetManagerGUI, modifique o método generate_captions:
-def generate_captions(self):
-    """Gera captions para as imagens"""
-    if not self.dataset_path:
-        QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
-        return
-        
-    try:
-        cropped_dir = self.dataset_path / "cropped_images"
-        if not cropped_dir.exists():
-            QMessageBox.warning(self, "Warning", "Please process images first!")
-            return
-        
-        n_files = sum(1 for _ in cropped_dir.glob("*.[jp][pn][g]"))
-        if n_files == 0:
-            QMessageBox.warning(self, "Warning", "No images found in cropped_images folder!")
-            return
-        
-        config_dialog = CaptionConfigDialog(self)
-        if config_dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-            
-        config = config_dialog.get_values()
-        
-        progress = QProgressDialog("Generating captions...", "Cancel", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setAutoClose(True)
-        progress.show()
-        
-        def update_progress(message: str, value: int):
-            if value >= 0:
-                progress.setLabelText(message)
-                progress.setValue(value)
-        
-        captions_dir = cropped_dir / "captions"
-        
-        # Debug print para verificar a seleção
-        print(f"Selected method: {config['method']}")
-        print(f"Selected model type: {config['model_type']}")
-        
-        # Escolhe o gerador apropriado
-        if config['method'] == "Florence-2":
-            print("Using Florence-2 generator")
-            from caption_generator import CaptionGenerator
-            generator = CaptionGenerator()
-        else:  # Danbooru
-            print("Using Danbooru generator")
-            from danbooru_generator import DanbooruGenerator
-            generator = DanbooruGenerator(model_type=config['model_type'])
-            print(f"Initialized Danbooru generator with model: {config['model_type']}")
-        
-        processed, failed = generator.process_directory(
-            cropped_dir, 
-            captions_dir,
-            prefix=config['prefix'],
-            progress_callback=update_progress
-        )
-        
-        progress.close()
-        
-        QMessageBox.information(self, "Success", 
-            f"Caption generation complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
-        
-        self.tree_model.clear()
-        self.populate_tree_view(self.dataset_path)
-        self.tree_view.expandAll()
-        self.update_status()
-        
-    except Exception as e:
-        # Mostra erro detalhado
-        import traceback
-        error_msg = f"Error generating captions:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-        QMessageBox.critical(self, "Error", error_msg)
-
 
 class DatasetManagerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dataset Manager")
-        self.setGeometry(100, 100, 1100, 900)  # Aumentei a largura para acomodar os widgets de treino
+        self.setGeometry(100, 100, 1300, 900)  # Aumentei a largura para acomodar os widgets de treino
         
         # State
         self.dataset_path = None
@@ -261,7 +203,7 @@ class DatasetManagerGUI(QMainWindow):
         self.tree_model = QStandardItemModel()
         self.tree_model.setHorizontalHeaderLabels(['Dataset Structure'])
         self.tree_view.setModel(self.tree_model)
-        self.tree_view.setColumnWidth(0, 300)
+        self.tree_view.setColumnWidth(0, 500)
         left_layout.addWidget(self.tree_view)
         
         left_panel.setLayout(left_layout)
@@ -366,7 +308,7 @@ class DatasetManagerGUI(QMainWindow):
         # Define proporção dos painéis (25/40/35)
         layout.addWidget(left_panel, 25)
         layout.addWidget(center_panel, 10)
-        layout.addWidget(self.training_tabs, 20)
+        layout.addWidget(self.training_tabs, 65)
         
         central_widget.setLayout(layout)
 
@@ -482,10 +424,22 @@ class DatasetManagerGUI(QMainWindow):
             if config['method'] == "Florence-2":
                 print("Using Florence-2 generator")
                 generator = CaptionGenerator()
-            else:  # Danbooru
+            elif config['method'] == "Danbooru":
                 print("Using Danbooru generator")
-                generator = DanbooruGenerator(model_type=config['model_type'])
-                print(f"Initialized Danbooru generator with model: {config['model_type']}")
+                model_type = config.get('model_type')
+                if model_type not in ['vit', 'swinv2', 'convnext']:
+                    model_type = 'vit'  # default to 'vit' if invalid
+                generator = DanbooruGenerator(model_type=model_type)
+                print(f"Initialized Danbooru generator with model: {model_type}")
+            else:  # Janus-7B
+                print("Using Janus-7B generator")
+                from janus_generator import JanusGenerator
+                generator = JanusGenerator()
+                if config['janus_context']:
+                    if config['replace_prompt']:
+                        generator.set_prompt(config['janus_context'])
+                    else:
+                        generator.add_context(config['janus_context'])
             
             processed, failed = generator.process_directory(
                 cropped_dir, 

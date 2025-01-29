@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                             QFormLayout, QLineEdit, QPushButton, QSpinBox,
-                            QCheckBox, QFileDialog, QLabel)
+                            QCheckBox, QFileDialog, QLabel, QMessageBox, QScrollArea)
+from PyQt6.QtCore import Qt
 from pathlib import Path
 import json
 from command_utils import CommandOutputDialog, ScriptManager, format_command_args
@@ -22,10 +23,37 @@ class TrainingWidgets(QWidget):
         super().__init__(parent)
         self.config = load_config()
         self.script_manager = ScriptManager()
+        
+        # Criar SpinBox que nunca aceita rolagem
+        class NoWheelSpinBox(QSpinBox):
+            def wheelEvent(self, event):
+                event.ignore()  # Sempre ignora eventos de rolagem
+        
+        # Guardar a classe para usar no init_ui
+        self.SpinBox = NoWheelSpinBox
+        
+        # Criar QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Criar widget para conter todos os controles
+        container = QWidget()
+        
+        # Layout principal para o container
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(scroll)
+        
+        # Configurar o container como widget do scroll
+        scroll.setWidget(container)
+        
+        # Layout para os controles (será usado em init_ui)
+        self.control_layout = QVBoxLayout(container)
+        
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout()
+        layout = self.control_layout
         layout.setSpacing(10)
 
         # Modelo base
@@ -54,16 +82,45 @@ class TrainingWidgets(QWidget):
         scripts_group.setLayout(scripts_layout)
         layout.addWidget(scripts_group)
 
+        # Resume Training
+        resume_group = QGroupBox("Resume Training")
+        resume_layout = QFormLayout()
+        
+        self.resume_checkbox = QCheckBox("Resume from weights")
+        self.resume_checkbox.setChecked(self.config.get("resume_training", False))
+        self.resume_path = QLineEdit()
+        self.resume_path.setEnabled(self.resume_checkbox.isChecked())
+        self.resume_path.setPlaceholderText("Path to network weights file (.safetensors or .pt)")
+        self.resume_path.setText(self.config.get("resume_path", ""))
+        select_resume = QPushButton("Browse")
+        select_resume.setEnabled(self.resume_checkbox.isChecked())
+        
+        resume_path_layout = QHBoxLayout()
+        resume_path_layout.addWidget(self.resume_path)
+        resume_path_layout.addWidget(select_resume)
+        
+        resume_layout.addRow(self.resume_checkbox)
+        resume_layout.addRow("Weights:", resume_path_layout)
+        
+        self.resume_checkbox.stateChanged.connect(lambda state: [
+            self.resume_path.setEnabled(state == Qt.CheckState.Checked.value),
+            select_resume.setEnabled(state == Qt.CheckState.Checked.value)
+        ])
+        select_resume.clicked.connect(self.select_resume_path)
+        
+        resume_group.setLayout(resume_layout)
+        layout.addWidget(resume_group)
+
         # Network parameters
         network_group = QGroupBox("Network Parameters")
         network_layout = QFormLayout()
         
-        self.network_dim = QSpinBox()
+        self.network_dim = self.SpinBox()
         self.network_dim.setRange(1, 128)
         self.network_dim.setValue(self.config.get("network_dim", 32))
         network_layout.addRow("Network Dimension:", self.network_dim)
 
-        self.network_alpha = QSpinBox()
+        self.network_alpha = self.SpinBox()
         self.network_alpha.setRange(1, 128)
         self.network_alpha.setValue(self.config.get("network_alpha", 16))
         network_layout.addRow("Network Alpha:", self.network_alpha)
@@ -81,17 +138,17 @@ class TrainingWidgets(QWidget):
         self.learning_rate = QLineEdit(self.config.get("learning_rate", "1e-4"))
         training_layout.addRow("Learning Rate:", self.learning_rate)
 
-        self.epochs = QSpinBox()
+        self.epochs = self.SpinBox()
         self.epochs.setRange(1, 1000)
         self.epochs.setValue(self.config.get("epochs", 32))
         training_layout.addRow("Max Epochs:", self.epochs)
 
-        self.save_every = QSpinBox()
+        self.save_every = self.SpinBox()
         self.save_every.setRange(1, 100)
         self.save_every.setValue(self.config.get("save_every", 32))
         training_layout.addRow("Save Every N Epochs:", self.save_every)
 
-        self.seed = QSpinBox()
+        self.seed = self.SpinBox()
         self.seed.setRange(1, 999999)
         self.seed.setValue(self.config.get("seed", 42))
         training_layout.addRow("Seed:", self.seed)
@@ -122,11 +179,15 @@ class TrainingWidgets(QWidget):
         self.sdpa.setChecked(self.config.get("sdpa", True))
         advanced_layout.addWidget(self.sdpa)
 
+        self.flip_aug = QCheckBox("Flip Augmentation")
+        self.flip_aug.setChecked(self.config.get("flip_aug", False))
+        advanced_layout.addWidget(self.flip_aug)
+
         self.persistent_workers = QCheckBox("Persistent Workers")
         self.persistent_workers.setChecked(self.config.get("persistent_workers", False))
         advanced_layout.addWidget(self.persistent_workers)
 
-        self.max_workers = QSpinBox()
+        self.max_workers = self.SpinBox()
         self.max_workers.setRange(0, 16)
         self.max_workers.setValue(self.config.get("max_workers", 2))
         worker_layout = QHBoxLayout()
@@ -137,7 +198,7 @@ class TrainingWidgets(QWidget):
         advanced_group.setLayout(advanced_layout)
         layout.addWidget(advanced_group)
 
-        # Output configuration
+        # Output Configuration
         output_group = QGroupBox("Output Configuration")
         output_layout = QVBoxLayout()
 
@@ -162,11 +223,21 @@ class TrainingWidgets(QWidget):
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
 
+        # Additional Parameters
+        params_group = QGroupBox("Additional Parameters")
+        params_layout = QVBoxLayout()
+        
+        self.additional_params = QLineEdit()
+        self.additional_params.setPlaceholderText("Additional command line parameters (e.g., --param1 value1 --param2 value2)")
+        self.additional_params.setText(self.config.get("additional_params", ""))
+        
+        params_layout.addWidget(self.additional_params)
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
+
         # Start Training button
         self.train_button = QPushButton("Start Training")
         layout.addWidget(self.train_button)
-
-        self.setLayout(layout)
 
     def select_model_path(self):
         path = QFileDialog.getOpenFileName(self, "Select Base Model", 
@@ -179,6 +250,13 @@ class TrainingWidgets(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Select Scripts Directory")
         if path:
             self.scripts_dir.setText(path)
+            self.save_current_config()
+
+    def select_resume_path(self):
+        path = QFileDialog.getOpenFileName(self, "Select Network Weights File", 
+                                         filter="Model files (*.safetensors *.pt)")[0]
+        if path:
+            self.resume_path.setText(path)
             self.save_current_config()
 
     def select_output_path(self):
@@ -208,12 +286,36 @@ class TrainingWidgets(QWidget):
             "cache_text_encoder": self.cache_text_encoder.isChecked(),
             "gradient_checkpointing": self.gradient_checkpointing.isChecked(),
             "sdpa": self.sdpa.isChecked(),
+            "flip_aug": self.flip_aug.isChecked(),
             "persistent_workers": self.persistent_workers.isChecked(),
             "max_workers": self.max_workers.value(),
             "network_args": self.network_args.text(),
-            "optimizer_args": self.optimizer_args.text()
+            "optimizer_args": self.optimizer_args.text(),
+            "resume_training": self.resume_checkbox.isChecked(),
+            "resume_path": self.resume_path.text(),
+            "additional_params": self.additional_params.text()
         }
         save_config(config)
+
+    def validate_paths(self):
+        """Valida os caminhos necessários"""
+        if not Path(self.model_path.text()).is_file():
+            QMessageBox.critical(self, "Error", "Invalid model path.")
+            return False
+        if not Path(self.output_dir.text()).is_dir():
+            QMessageBox.critical(self, "Error", "Invalid output directory.")
+            return False
+        if not self.output_name.text().strip():
+            QMessageBox.critical(self, "Error", "Output name cannot be empty.")
+            return False
+        script_path = Path(self.scripts_dir.text()) / "sdxl_train_network.py"
+        if not script_path.is_file():
+            QMessageBox.critical(self, "Error", f"Training script not found in: {script_path}")
+            return False
+        if self.resume_checkbox.isChecked() and not Path(self.resume_path.text()).is_file():
+            QMessageBox.critical(self, "Error", "Invalid network weights file.")
+            return False
+        return True
 
     def get_command(self, dataset_path):
         """Gera o comando de treinamento com base nas configurações"""
@@ -244,6 +346,7 @@ class TrainingWidgets(QWidget):
             "--network_train_unet_only",
             "--cache_text_encoder_outputs" if self.cache_text_encoder.isChecked() else "",
             "--cache_text_encoder_outputs_to_disk" if self.cache_text_encoder.isChecked() else "",
+            "--flip_aug" if self.flip_aug.isChecked() else "",
             f"--max_train_epochs {self.epochs.value()}",
             f"--save_every_n_epochs {self.save_every.value()}",
             f"--dataset_config {dataset_config}",
@@ -262,6 +365,16 @@ class TrainingWidgets(QWidget):
         if network_args:
             cmd.append("--network_args")
             cmd.extend(format_command_args(network_args))
+
+        # Adiciona opção de network_weights se marcado
+        if self.resume_checkbox.isChecked() and self.resume_path.text().strip():
+            resume_path = self.resume_path.text().strip()
+            cmd.append(f"--network_weights {resume_path}")
+
+        # Adiciona parâmetros adicionais se houver
+        additional_params = self.additional_params.text().strip()
+        if additional_params:
+            cmd.extend(additional_params.split())
 
         filtered_cmd = filter(None, cmd)
         # Converte os itens para string e filtra os vazios

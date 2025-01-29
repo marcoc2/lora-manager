@@ -41,42 +41,65 @@ class TrainingWorker(QThread):
     def __init__(self, task):
         super().__init__()
         self.task = task
+        self.process = None
         
     def run(self):
         try:
             import subprocess
+            import io
             self.task.start_time = datetime.now()
-            print(f"Executing command: {self.task.command}")
             
-            process = subprocess.Popen(
+            # Cria o processo com as configurações corretas para Windows
+            self.process = subprocess.Popen(
                 self.task.command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 shell=True,
-                universal_newlines=False
+                universal_newlines=True,  # Mudado para True para facilitar a leitura
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                bufsize=1,
+                encoding='utf-8',  # Especifica a codificação diretamente
+                errors='replace'   # Lida com caracteres inválidos
             )
             
-            while True:
-                output = process.stdout.readline()
-                if output == b'' and process.poll() is not None:
-                    break
-                if output:
-                    try:
-                        line = output.decode('utf-8', errors='replace').strip()
-                        print(f"Training output: {line}")
-                        self.task_progress.emit(line)
-                    except Exception as e:
-                        print(f"Error processing output: {e}")
+            # Lê a saída linha por linha em tempo real
+            for line in self.process.stdout:
+                line = line.strip()
+                if line:  # Só emite se não for linha vazia
+                    self.task_progress.emit(line)
+            
+            self.process.wait()  # Espera o processo terminar
             
             self.task.end_time = datetime.now()
-            success = process.returncode == 0
+            returncode = self.process.returncode
+            
+            if returncode == 3221225477:  # 0xC0000005
+                error_msg = ("Memory access error (0xC0000005). This usually means:\n"
+                           "1. Not enough RAM/VRAM for the current settings\n"
+                           "2. Try reducing batch size or model dimensions\n"
+                           "3. Check if other programs are using GPU memory\n"
+                           "4. Try restarting your computer if problem persists")
+                self.task_progress.emit(error_msg)
+                success = False
+            else:
+                success = returncode == 0
+                
             self.task_completed.emit(success)
             
         except Exception as e:
-            print(f"Error in training worker: {e}")
             self.task.end_time = datetime.now()
-            self.task_progress.emit(f"Error: {str(e)}")
+            error_msg = f"Error in training process: {str(e)}"
+            print(error_msg)
+            self.task_progress.emit(error_msg)
             self.task_completed.emit(False)
+            
+        finally:
+            if self.process:
+                try:
+                    self.process.stdout.close()
+                    self.process.wait(timeout=5)  # Espera até 5 segundos pelo processo terminar
+                except:
+                    pass
 
 class QueueManager(QWidget):
     signal_add_task = pyqtSignal(object)
@@ -89,6 +112,7 @@ class QueueManager(QWidget):
         self.task_queue = queue.Queue()
         self.current_task = None
         self.workers = []
+        self.is_processing = False
         
         # Conecta sinais aos slots
         self.signal_add_task.connect(self._add_task_to_list)
@@ -181,45 +205,71 @@ class QueueManager(QWidget):
     def process_queue(self):
         """Process tasks in the queue"""
         while True:
-            if self.current_task is None:
+            if not self.is_processing and self.current_task is None:
                 try:
                     task = self.task_queue.get(timeout=1)
                     self.current_task = task
+                    self.is_processing = True
                     self.execute_task(task)
                 except queue.Empty:
-                    continue
-            threading.Event().wait(1)
+                    pass
+            threading.Event().wait(1)  # Pequena pausa para não sobrecarregar a CPU
     
     def execute_task(self, task):
         """Execute a single training task"""
-        print(f"Starting task: {task.output_name}")
-        task.status = "Running"
-        self.signal_update_task.emit(task)
-        
-        self.signal_clear_log.emit()
-        self.signal_append_log.emit(f"Starting training for: {task.output_name}\n")
-        self.signal_append_log.emit(f"Command: {task.command}\n")
-        self.signal_append_log.emit("="*50 + "\n")
-        
-        worker = TrainingWorker(task)
-        worker.task_progress.connect(lambda msg: self.signal_append_log.emit(msg + "\n"))
-        worker.task_completed.connect(lambda success: self.task_finished(task, success))
-        worker.start()
-        self.workers.append(worker)
+        try:
+            # Verifica se o dataset.toml existe
+            dataset_toml = task.dataset_path / "cropped_images" / "dataset.toml"
+            if not dataset_toml.exists():
+                self.task_finished(task, False)
+                raise FileNotFoundError(f"dataset.toml not found in {dataset_toml}")
+            
+            task.status = "Running"
+            self.signal_update_task.emit(task)
+            
+            # Verifica e corrige o caminho do dataset.toml
+            cmd = task.command
+            if "dataset_config" in cmd:
+                cmd = cmd.replace("cropped_images\\cropped_images", "cropped_images")
+            
+            self.signal_clear_log.emit()
+            self.signal_append_log.emit(f"Starting training for: {task.output_name}\n")
+            self.signal_append_log.emit(f"Command: {cmd}\n")
+            self.signal_append_log.emit("="*50 + "\n")
+            
+            worker = TrainingWorker(task)
+            worker.task_progress.connect(self._handle_task_progress)
+            worker.task_completed.connect(lambda success: self.task_finished(task, success))
+            worker.task.command = cmd
+            worker.start()
+            self.workers.append(worker)
+            
+        except Exception as e:
+            error_msg = f"Error starting task: {str(e)}"
+            self.signal_append_log.emit(f"\n{error_msg}\n")
+            self.task_finished(task, False)
+    
+    def _handle_task_progress(self, message):
+        """Processa as mensagens de progresso do treinamento"""
+        self.signal_append_log.emit(message + "\n")
     
     def task_finished(self, task, success):
         """Handle task completion"""
-        task.status = "Completed" if success else "Failed"
-        self.signal_update_task.emit(task)
-        self.current_task = None
-        
-        status_msg = "Training completed successfully!" if success else "Training failed!"
-        self.signal_append_log.emit(f"\n{status_msg}\n{'='*50}\n")
-        
-        # Clean up finished worker
-        for worker in self.workers[:]:
-            if worker.isFinished():
-                self.workers.remove(worker)
+        try:
+            task.status = "Completed" if success else "Failed"
+            self.signal_update_task.emit(task)
+            
+            status_msg = "Training completed successfully!" if success else "Training failed!"
+            self.signal_append_log.emit(f"\n{status_msg}\n{'='*50}\n")
+            
+            # Clean up finished worker
+            for worker in self.workers[:]:
+                if worker.isFinished():
+                    self.workers.remove(worker)
+        finally:
+            # Garante que os estados são resetados mesmo se houver erro
+            self.current_task = None
+            self.is_processing = False
     
     def clear_completed_tasks(self):
         """Remove completed tasks from the display"""
