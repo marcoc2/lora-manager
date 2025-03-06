@@ -1,116 +1,105 @@
 # Lora Training Manager
 
-Uma ferramenta gráfica para gerenciar datasets e treinamentos de modelos LoRA para Stable Diffusion, com integração aos scripts Kohya.
+![Logo](icon.svg)
 
-## Características
+A graphical tool for managing datasets and training LoRA models for Stable Diffusion, with integration to Kohya scripts.
 
-- Interface gráfica multiplataforma usando PyQt6
-- Visualização e gerenciamento da estrutura do dataset em árvore
-- Processamento automatizado de imagens:
-  - Detecção facial e crop inteligente
-  - Redimensionamento com preservação de proporção
-  - Upscaling quando necessário
-- Geração automática de captions usando BLIP
-- Geração automática de dataset.toml para treinamento
-- Integração com scripts Kohya
+## Features
 
-## Pré-requisitos
+- Cross-platform graphical interface using PyQt6
+- Tree-view visualization and management of dataset structure
+- Automated image processing:
+  - Facial detection and intelligent cropping
+  - Resizing with aspect ratio preservation
+  - Upscaling when necessary
+- Automatic caption generation using BLIP
+- Automatic dataset.toml generation for training
+- Integration with Kohya scripts
+
+## Prerequisites
 
 ### Python
-- Python 3.10 ou superior
-- pip (gerenciador de pacotes Python)
+- Python 3.10 or higher
+- pip (Python package manager)
 
-### Dependências do Sistema (Linux)
+### System Dependencies (Linux)
 ```bash
-sudo apt-get install python3-pyqt6
-sudo apt-get install libxcb-cursor0
-sudo apt-get install xcb
-sudo apt-get install python3-pyqt6.qtsvg
-sudo apt-get install libxcb-xinerama0
-sudo apt-get install libxcb-randr0
-sudo apt-get install libxcb-xtest0
-sudo apt-get install libxcb-shape0
-sudo apt-get install libxcb-xkb1
+sudo apt-get install python3-pyqt6 libxcb-cursor0 xcb python3-pyqt6.qtsvg libxcb-xinerama0 libxcb-randr0 libxcb-xtest0 libxcb-shape0 libxcb-xkb1
 ```
 
-### Dependências Python
-```bash
-pip install PyQt6 Pillow opencv-python transformers torch toml
-```
+## Installation
 
-## Instalação
-
-1. Clone o repositório:
+1. Clone the repository:
 ```bash
-git clone https://github.com/seu-usuario/lora-training-manager.git
+git clone https://github.com/your-username/lora-training-manager.git
 cd lora-training-manager
 ```
 
-2. Crie e ative um ambiente virtual (recomendado):
+2. Create and activate a virtual environment (recommended):
 ```bash
 python -m venv venv
 source venv/bin/activate  # Linux/macOS
-# ou
+# or
 venv\Scripts\activate  # Windows
 ```
 
-3. Instale as dependências:
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## Uso
+## Usage
 
-1. Execute o programa:
+1. Run the program:
 ```bash
-python main-gui.py
+python main.py
 ```
 
-2. Selecione a pasta do seu dataset usando o botão "Select Dataset Folder"
+2. Select your dataset folder using the "Select Dataset Folder" button
 
-3. Use o menu de contexto (botão direito) na TreeView para acessar as operações:
-   - Process Images: Processa as imagens do dataset
-   - Generate Captions: Gera captions usando BLIP
-   - Generate dataset.toml: Cria o arquivo de configuração para treinamento
-   - Analyze Dataset: Mostra estatísticas do dataset atual
+3. Use the context menu (right click) in the TreeView to access operations:
+   - Process Images: Process dataset images
+   - Generate Captions: Generate captions using BLIP
+   - Generate dataset.toml: Create configuration file for training
+   - Analyze Dataset: Show statistics for the current dataset
 
-## Estrutura do Projeto
+## Project Structure
 
 ```
 lora-training-manager/
-├── main-gui.py              # Interface gráfica principal
-├── dataset_manager.py       # Módulo de gerenciamento de dataset
-├── image_processor.py       # Processamento de imagens
-├── caption_generator.py     # Geração de captions com BLIP
-├── requirements.txt         # Dependências do projeto
-└── README.md               # Este arquivo
+├── main.py                  # Main graphical interface
+├── dataset_manager.py       # Dataset management module
+├── image_processor.py       # Image processing
+├── caption_generator.py     # Caption generation with BLIP
+├── requirements.txt         # Project dependencies
+└── README.md                # This file
 ```
 
-## Contribuindo
+## Contributing
 
-Contribuições são bem-vindas! Por favor, sinta-se à vontade para enviar pull requests.
+Contributions are welcome! Please feel free to submit pull requests.
 
-1. Fork o projeto
-2. Crie sua feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit suas mudanças (`git commit -m 'Add some AmazingFeature'`)
-4. Push para a branch (`git push origin feature/AmazingFeature`)
-5. Abra um Pull Request
+1. Fork the project
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-## Licença
+## License
 
-Este projeto está licenciado sob a GNU General Public License v3.0 - veja o arquivo [LICENSE](LICENSE) para detalhes.
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
 Copyright (C) 2024 
 
-Este programa é software livre: você pode redistribuí-lo e/ou modificá-lo
-sob os termos da GNU General Public License conforme publicada pela
-Free Software Foundation, seja a versão 3 da Licença, ou
-(a seu critério) qualquer versão posterior.
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-Este programa é distribuído na esperança de que seja útil,
-mas SEM QUALQUER GARANTIA; sem mesmo a garantia implícita de
-COMERCIALIZAÇÃO ou ADEQUAÇÃO A UM DETERMINADO FIM. Veja a
-GNU General Public License para mais detalhes.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-Você deve ter recebido uma cópia da GNU General Public License
-junto com este programa. Se não, veja <https://www.gnu.org/licenses/>.
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
