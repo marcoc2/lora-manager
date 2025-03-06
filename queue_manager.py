@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 import queue
 import threading
+import platform
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -49,17 +51,28 @@ class TrainingWorker(QThread):
             import io
             self.task.start_time = datetime.now()
             
-            # Cria o processo com as configurações corretas para Windows
+            # Verificar o sistema operacional
+            is_windows = platform.system() == 'Windows'
+            
+            # Configurar os argumentos do Popen de acordo com o sistema operacional
+            popen_kwargs = {
+                'stdout': subprocess.PIPE,
+                'stderr': subprocess.STDOUT,
+                'shell': True,
+                'universal_newlines': True,
+                'bufsize': 1,
+                'encoding': 'utf-8',
+                'errors': 'replace'
+            }
+            
+            # Adicionar flags específicas do Windows se estivermos no Windows
+            if is_windows:
+                popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+            
+            # Cria o processo com as configurações apropriadas para o sistema operacional
             self.process = subprocess.Popen(
                 self.task.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=True,
-                universal_newlines=True,  # Mudado para True para facilitar a leitura
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                bufsize=1,
-                encoding='utf-8',  # Especifica a codificação diretamente
-                errors='replace'   # Lida com caracteres inválidos
+                **popen_kwargs
             )
             
             # Lê a saída linha por linha em tempo real
@@ -73,7 +86,7 @@ class TrainingWorker(QThread):
             self.task.end_time = datetime.now()
             returncode = self.process.returncode
             
-            if returncode == 3221225477:  # 0xC0000005
+            if returncode == 3221225477:  # 0xC0000005 (específico do Windows)
                 error_msg = ("Memory access error (0xC0000005). This usually means:\n"
                            "1. Not enough RAM/VRAM for the current settings\n"
                            "2. Try reducing batch size or model dimensions\n"
@@ -229,8 +242,15 @@ class QueueManager(QWidget):
             
             # Verifica e corrige o caminho do dataset.toml
             cmd = task.command
-            if "dataset_config" in cmd:
-                cmd = cmd.replace("cropped_images\\cropped_images", "cropped_images")
+            
+            # Verificação de caminho no Windows vs Linux
+            if platform.system() == 'Windows':
+                if "cropped_images\\cropped_images" in cmd:
+                    cmd = cmd.replace("cropped_images\\cropped_images", "cropped_images")
+            else:
+                # Verifica e corrige caminhos no formato Linux
+                if "cropped_images/cropped_images" in cmd:
+                    cmd = cmd.replace("cropped_images/cropped_images", "cropped_images")
             
             self.signal_clear_log.emit()
             self.signal_append_log.emit(f"Starting training for: {task.output_name}\n")
