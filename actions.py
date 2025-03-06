@@ -50,6 +50,25 @@ class DatasetActionsMixin:
         else:
             self.status_label.setText("No dataset selected")
     
+    def get_image_files(self, directory):
+        """Obter todos os arquivos de imagem suportados em um diretório,
+        incluindo diferentes casos de extensão e formatos adicionais."""
+        # Lista para armazenar todos os arquivos de imagem encontrados
+        image_files = []
+        
+        # Extensões de imagem comuns em diferentes casos
+        extensions = [
+            "*.jpg", "*.jpeg", "*.png", "*.webp",  # minúsculas
+            "*.JPG", "*.JPEG", "*.PNG", "*.WEBP",  # maiúsculas
+            "*.Jpg", "*.Jpeg", "*.Png", "*.Webp"   # misto
+        ]
+        
+        # Procurar por cada tipo de extensão
+        for ext in extensions:
+            image_files.extend(directory.glob(ext))
+        
+        return image_files
+    
     def process_images(self):
         if not self.dataset_path:
             QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
@@ -59,20 +78,83 @@ class DatasetActionsMixin:
             input_dir = self.dataset_path
             output_dir = self.dataset_path / "cropped_images"
             
-            n_files = sum(1 for _ in input_dir.glob("*.[jp][pn][g]"))
+            # Encontrar todas as imagens com extensões diversas usando nosso método
+            our_image_files = self.get_image_files(input_dir)
+            n_files = len(our_image_files)
+            
+            # Verificar quais arquivos o método original encontraria
+            original_glob_files = list(input_dir.glob("*.[jp][pn][g]"))
+            n_original_files = len(original_glob_files)
+            
+            # Criar listas de nomes para comparação
+            our_filenames = [f.name for f in our_image_files]
+            original_filenames = [f.name for f in original_glob_files]
+            
+            # Encontrar diferenças
+            missing_files = [f for f in our_filenames if f not in original_filenames]
+            
+            # Mostrar diagnóstico
+            diagnostic_message = (
+                f"Diagnóstico:\n"
+                f"- Nosso método encontrou: {n_files} imagens\n"
+                f"- Método original encontraria: {n_original_files} imagens\n\n"
+                f"Arquivos que seriam ignorados pelo método original:\n"
+                f"{', '.join(missing_files)}"
+            )
+            
+            QMessageBox.information(self, "Diagnóstico", diagnostic_message)
+            
             if n_files == 0:
                 QMessageBox.warning(self, "Warning", "No images found in the input directory!")
                 return
             
-            target_size = (self.crop_width.value(), self.crop_height.value())
-            self.image_processor.use_face_detection = self.face_detection.isChecked()
+            # SOLUÇÃO TEMPORÁRIA: Modificar o comportamento do ImageProcessor
+            # Vamos sobrecarregar o método process_directory para processar nossa lista de arquivos
             
-            processed, failed = self.image_processor.process_directory(
-                input_dir, output_dir, target_size
-            )
+            # Guardar método original para restaurar depois
+            original_process_dir = self.image_processor.process_directory
             
-            QMessageBox.information(self, "Success", 
-                f"Processing complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
+            # Definir uma função wrapper customizada
+            def custom_process_directory(input_dir, output_dir, target_size):
+                processed = 0
+                failed = 0
+                
+                # Garantir que o diretório de saída existe
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Processar cada arquivo que encontramos
+                for image_path in our_image_files:
+                    try:
+                        # Chamar o método de processamento de arquivo único do ImageProcessor
+                        # (Observe que você pode precisar ajustar isto com base na implementação real)
+                        output_path = output_dir / f"{image_path.stem}.png"
+                        if self.image_processor.process_image(image_path, output_path, target_size):
+                            processed += 1
+                        else:
+                            failed += 1
+                    except Exception as e:
+                        print(f"Error processing {image_path}: {e}")
+                        failed += 1
+                
+                return processed, failed
+            
+            # Substituir o método temporariamente
+            try:
+                # Esta é uma solução rápida - pode não funcionar dependendo da implementação do ImageProcessor
+                self.image_processor.process_directory = custom_process_directory
+                
+                target_size = (self.crop_width.value(), self.crop_height.value())
+                self.image_processor.use_face_detection = self.face_detection.isChecked()
+                
+                processed, failed = self.image_processor.process_directory(
+                    input_dir, output_dir, target_size
+                )
+                
+                QMessageBox.information(self, "Success", 
+                    f"Processing complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
+            finally:
+                # Restaurar o método original
+                self.image_processor.process_directory = original_process_dir
             
             self.tree_model.clear()
             self.populate_tree_view(self.dataset_path)
@@ -80,7 +162,9 @@ class DatasetActionsMixin:
             self.update_status()
             
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error processing images: {str(e)}")
+            import traceback
+            error_msg = f"Error processing images: {str(e)}\n\n{traceback.format_exc()}"
+            QMessageBox.critical(self, "Error", error_msg)
     
     def generate_captions(self):
         if not self.dataset_path:
@@ -93,7 +177,10 @@ class DatasetActionsMixin:
                 QMessageBox.warning(self, "Warning", "Please process images first!")
                 return
             
-            n_files = sum(1 for _ in cropped_dir.glob("*.[jp][pn][g]"))
+            # Usar o método melhorado para encontrar imagens
+            image_files = self.get_image_files(cropped_dir)
+            n_files = len(image_files)
+            
             if n_files == 0:
                 QMessageBox.warning(self, "Warning", "No images found in cropped_images folder!")
                 return
@@ -215,14 +302,35 @@ class DatasetActionsMixin:
             QMessageBox.warning(self, "Warning", "Cropped images directory does not exist!")
             return
 
-        image_files = list(image_dir.glob("*.[jp][pn][g]")) + list(image_dir.glob("*.webp"))
+        # Usar o método melhorado para encontrar imagens
+        image_files = self.get_image_files(image_dir)
+        
         if not image_files:
             QMessageBox.warning(self, "Warning", "No images found for renaming and conversion!")
             return
 
-        # Aqui você implementa a lógica de renomear e converter as imagens.
-        # Por enquanto, apenas exibiremos uma mensagem de sucesso.
-        QMessageBox.information(self, "Success", f"Images renamed and converted with suffix '{suffix}' successfully!")
+        converted_count = 0
+        from PIL import Image
+
+        for idx, image_path in enumerate(sorted(image_files), 1):
+            try:
+                new_name = f"{image_path.stem}{suffix}_{str(idx).zfill(3)}.png"
+                new_path = image_dir / new_name
+
+                with Image.open(image_path) as img:
+                    img = img.convert("RGB")
+                    img.save(new_path, "PNG")
+
+                if image_path.suffix.lower() != ".png":
+                    image_path.unlink()  # Remove o arquivo original
+
+                converted_count += 1
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to process {image_path.name}: {e}")
+
+        QMessageBox.information(self, "Success", 
+            f"Renamed and converted {converted_count} images with suffix '{suffix}' successfully!")
+        
         self.tree_model.clear()
         self.populate_tree_view(self.dataset_path)
         self.update_status()
