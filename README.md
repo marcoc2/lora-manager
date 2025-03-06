@@ -1,6 +1,6 @@
 # Lora Training Manager
 
-![Logo](icon.svg)
+<img src="icon.svg" alt="Logo" width="120"/>
 
 A graphical tool for managing datasets and training LoRA models for Stable Diffusion, with integration to Kohya scripts.
 
