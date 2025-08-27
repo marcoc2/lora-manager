@@ -47,7 +47,13 @@ class TrainingWorker(QThread):
         try:
             import subprocess
             import io
+            import os
             self.task.start_time = datetime.now()
+            
+            # Configurar environment para UTF-8
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            env['PYTHONLEGACYWINDOWSSTDIO'] = '0'
             
             # Cria o processo com as configurações corretas para Windows
             self.process = subprocess.Popen(
@@ -59,7 +65,8 @@ class TrainingWorker(QThread):
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                 bufsize=1,
                 encoding='utf-8',  # Especifica a codificação diretamente
-                errors='replace'   # Lida com caracteres inválidos
+                errors='replace',   # Lida com caracteres inválidos
+                env=env  # Passa as variáveis de ambiente
             )
             
             # Lê a saída linha por linha em tempo real
@@ -148,8 +155,13 @@ class QueueManager(QWidget):
         self.clear_all_btn = QPushButton("Clear All")
         self.clear_all_btn.clicked.connect(self.clear_all_tasks)
         
+        self.reset_queue_btn = QPushButton("Reset Queue")
+        self.reset_queue_btn.clicked.connect(self.reset_queue)
+        self.reset_queue_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; }")
+        
         button_layout.addWidget(self.clear_completed_btn)
         button_layout.addWidget(self.clear_all_btn)
+        button_layout.addWidget(self.reset_queue_btn)
         
         queue_layout.addLayout(button_layout)
         queue_group.setLayout(queue_layout)
@@ -216,13 +228,22 @@ class QueueManager(QWidget):
             threading.Event().wait(1)  # Pequena pausa para não sobrecarregar a CPU
     
     def execute_task(self, task):
-        """Execute a single training task"""
+        """Execute a single training task (com cache automático se necessário)"""
         try:
-            # Verifica se o dataset.toml existe
+            # Verificar se o comando é um dict (contém cache + treinamento)
+            if isinstance(task.command, dict) and "cache_commands" in task.command:
+                # Executar caches primeiro, depois treinamento
+                self.execute_cache_and_training(task)
+                return
+            # Verifica se o dataset.toml ou dataset_qwen.toml existe
             dataset_toml = task.dataset_path / "cropped_images" / "dataset.toml"
-            if not dataset_toml.exists():
+            dataset_qwen_toml = task.dataset_path / "cropped_images" / "dataset_qwen.toml"
+            
+            if not dataset_toml.exists() and not dataset_qwen_toml.exists():
+                error_msg = f"No dataset config found in {task.dataset_path / 'cropped_images'}. Please generate TOML files first."
+                self.signal_append_log.emit(f"\nError: {error_msg}\n")
                 self.task_finished(task, False)
-                raise FileNotFoundError(f"dataset.toml not found in {dataset_toml}")
+                return  # ✅ RETURN em vez de RAISE
             
             task.status = "Running"
             self.signal_update_task.emit(task)
@@ -246,7 +267,83 @@ class QueueManager(QWidget):
             
         except Exception as e:
             error_msg = f"Error starting task: {str(e)}"
-            self.signal_append_log.emit(f"\n{error_msg}\n")
+            self.signal_append_log.emit(f"\nError starting task: {error_msg}\n")
+            self.signal_append_log.emit(f"Stack trace: {str(e)}\n")
+            self.task_finished(task, False)
+            # Log do erro mas não re-raise para manter a fila funcionando
+    
+    def execute_cache_and_training(self, task):
+        """Executa caches sequencialmente e depois o treinamento"""
+        try:
+            cache_info = task.command
+            cache_commands = cache_info["cache_commands"]
+            training_command = cache_info["training_command"]
+            
+            task.status = "Running"
+            self.signal_update_task.emit(task)
+            self.signal_clear_log.emit()
+            
+            # Executar caches sequencialmente
+            for i, cache_cmd in enumerate(cache_commands):
+                cache_type = "Latent Cache" if "cache_latents" in str(cache_cmd) else "Text Encoder Cache"
+                self.signal_append_log.emit(f"Step {i+1}/{len(cache_commands)}: Running {cache_type}...\n")
+                self.signal_append_log.emit(f"Command: {' '.join(cache_cmd)}\n")
+                self.signal_append_log.emit("="*50 + "\n")
+                
+                # Executar comando de cache
+                import subprocess
+                import os
+                
+                # Configurar environment para UTF-8
+                env = os.environ.copy()
+                env['PYTHONIOENCODING'] = 'utf-8'
+                env['PYTHONLEGACYWINDOWSSTDIO'] = '0'
+                
+                process = subprocess.Popen(
+                    cache_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    shell=True,
+                    universal_newlines=True,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    bufsize=1,
+                    encoding='utf-8',
+                    errors='replace',
+                    env=env
+                )
+                
+                # Ler saída em tempo real
+                for line in process.stdout:
+                    line = line.strip()
+                    if line:
+                        self.signal_append_log.emit(line + "\n")
+                
+                process.wait()
+                
+                if process.returncode != 0:
+                    self.signal_append_log.emit(f"\nError: {cache_type} failed with return code {process.returncode}\n")
+                    self.task_finished(task, False)
+                    return
+                else:
+                    self.signal_append_log.emit(f"\n{cache_type} completed successfully!\n")
+            
+            # Agora executar treinamento
+            self.signal_append_log.emit(f"\nStep {len(cache_commands)+1}/{len(cache_commands)+1}: Starting Training...\n")
+            self.signal_append_log.emit("="*50 + "\n")
+            
+            # Atualizar comando da task para o treinamento
+            task.command = training_command
+            
+            # Executar treinamento normalmente
+            worker = TrainingWorker(task)
+            worker.task_progress.connect(self._handle_task_progress)
+            worker.task_completed.connect(lambda success: self.task_finished(task, success))
+            worker.start()
+            self.workers.append(worker)
+            
+        except Exception as e:
+            error_msg = f"Error in cache and training: {str(e)}"
+            self.signal_append_log.emit(f"\nError: {error_msg}\n")
             self.task_finished(task, False)
     
     def _handle_task_progress(self, message):
@@ -294,3 +391,41 @@ class QueueManager(QWidget):
                 self.task_queue.get_nowait()
             except queue.Empty:
                 break
+                
+    def reset_queue(self):
+        """Reset the entire queue system (emergency reset)"""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        reply = QMessageBox.question(self, "Reset Queue", 
+                                   "This will force-stop all running tasks and reset the queue. Continue?",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Force-stop all workers
+            for worker in self.workers[:]:
+                try:
+                    if worker.process:
+                        worker.process.terminate()
+                        worker.process.kill()
+                    worker.quit()
+                    worker.wait(3000)  # Wait up to 3 seconds
+                except:
+                    pass
+                self.workers.remove(worker)
+            
+            # Clear queue completely
+            while True:
+                try:
+                    self.task_queue.get_nowait()
+                except queue.Empty:
+                    break
+            
+            # Reset states
+            self.current_task = None
+            self.is_processing = False
+            
+            # Clear UI
+            self.queue_list.clear()
+            self.log_output.clear()
+            
+            self.signal_append_log.emit("Queue has been reset. You can now add new tasks.\n")

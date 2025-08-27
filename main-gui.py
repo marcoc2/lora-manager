@@ -96,6 +96,83 @@ class TomlConfigDialog(QDialog):
             'resolution': self.resolution.value()
         }
 
+class QwenTomlConfigDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Qwen-Image Dataset Configuration")
+        self.setModal(True)
+        
+        layout = QFormLayout()
+        
+        # Qwen-specific configuration
+        self.caption_extension = QLineEdit()
+        self.caption_extension.setText(".txt")
+        
+        self.batch_size = QSpinBox()
+        self.batch_size.setRange(1, 16)
+        self.batch_size.setValue(1)
+        
+        self.enable_bucket = QCheckBox("Enable Bucket")
+        self.enable_bucket.setChecked(True)
+        
+        self.bucket_no_upscale = QCheckBox("Bucket No Upscale")
+        self.bucket_no_upscale.setChecked(False)
+        
+        # Resolution with width/height
+        self.resolution_width = QSpinBox()
+        self.resolution_width.setRange(256, 2048)
+        self.resolution_width.setValue(768)
+        self.resolution_width.setSingleStep(64)
+        
+        self.resolution_height = QSpinBox()
+        self.resolution_height.setRange(256, 2048)
+        self.resolution_height.setValue(768)
+        self.resolution_height.setSingleStep(64)
+        
+        self.num_repeats = QSpinBox()
+        self.num_repeats.setRange(1, 100)
+        self.num_repeats.setValue(1)
+        
+        layout.addRow("Caption Extension:", self.caption_extension)
+        layout.addRow("Batch Size:", self.batch_size)
+        layout.addRow("", self.enable_bucket)
+        layout.addRow("", self.bucket_no_upscale)
+        
+        # Resolution layout
+        res_layout = QHBoxLayout()
+        res_layout.addWidget(self.resolution_width)
+        res_layout.addWidget(QLabel("x"))
+        res_layout.addWidget(self.resolution_height)
+        layout.addRow("Resolution (W x H):", res_layout)
+        
+        layout.addRow("Number of Repeats:", self.num_repeats)
+        
+        buttons = QHBoxLayout()
+        ok_button = QPushButton("OK")
+        cancel_button = QPushButton("Cancel")
+        
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        
+        buttons.addWidget(ok_button)
+        buttons.addWidget(cancel_button)
+        
+        final_layout = QVBoxLayout()
+        final_layout.addLayout(layout)
+        final_layout.addLayout(buttons)
+        
+        self.setLayout(final_layout)
+    
+    def get_values(self):
+        return {
+            'caption_extension': self.caption_extension.text(),
+            'batch_size': self.batch_size.value(),
+            'enable_bucket': self.enable_bucket.isChecked(),
+            'bucket_no_upscale': self.bucket_no_upscale.isChecked(),
+            'resolution': [self.resolution_width.value(), self.resolution_height.value()],
+            'num_repeats': self.num_repeats.value()
+        }
+
 # Modifique a classe CaptionConfigDialog para incluir a seleção do método:
 class CaptionConfigDialog(QDialog):
     def __init__(self, parent=None):
@@ -266,8 +343,8 @@ class DatasetManagerGUI(QMainWindow):
         dataset_layout = QVBoxLayout()
         dataset_layout.setContentsMargins(10, 15, 10, 15)  # Margens internas
         
-        generate_toml_btn = QPushButton("Generate dataset.toml")
-        generate_toml_btn.clicked.connect(self.generate_toml)
+        generate_toml_btn = QPushButton("Generate dataset.toml files")
+        generate_toml_btn.clicked.connect(self.generate_all_toml)
         dataset_layout.addWidget(generate_toml_btn)
         
         dataset_group.setLayout(dataset_layout)
@@ -462,6 +539,83 @@ class DatasetManagerGUI(QMainWindow):
             import traceback
             error_msg = f"Error generating captions:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             QMessageBox.critical(self, "Error", error_msg)
+
+    def generate_all_toml(self):
+        """Gera ambos os formatos: sd-scripts (dataset.toml) e Musubi (dataset_qwen.toml)"""
+        if not self.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
+            return
+        
+        try:
+            dialog = QwenTomlConfigDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                config = dialog.get_values()
+                
+                # Verificar se já estamos na pasta cropped_images
+                if self.dataset_path.name == "cropped_images":
+                    cropped_dir = self.dataset_path
+                else:
+                    cropped_dir = self.dataset_path / "cropped_images"
+                    cropped_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 1. Gerar TOML para sd-scripts (SDXL/Flux)
+                sdscripts_toml = {
+                    "general": {
+                        "shuffle_caption": False,
+                        "caption_extension": ".txt",
+                        "keep_tokens": 1
+                    },
+                    "datasets": [{
+                        "resolution": config['resolution'][0],  # Usar só a largura
+                        "batch_size": 1,
+                        "keep_tokens": 1,
+                        "subsets": [{
+                            "image_dir": str(cropped_dir.resolve()),
+                            "class_tokens": "",  # Usuário pode editar depois
+                            "num_repeats": config['num_repeats']
+                        }]
+                    }]
+                }
+                
+                toml_path_sdscripts = cropped_dir / "dataset.toml"
+                with open(toml_path_sdscripts, "w", encoding="utf-8") as f:
+                    toml.dump(sdscripts_toml, f)
+                
+                # 2. Gerar TOML para Musubi (Qwen-Image) - formato oficial correto
+                musubi_toml = {
+                    "general": {
+                        "resolution": config['resolution'],
+                        "caption_extension": config['caption_extension'],
+                        "batch_size": config['batch_size'],
+                        "enable_bucket": config['enable_bucket'],
+                        "bucket_no_upscale": config['bucket_no_upscale']
+                    },
+                    "datasets": [{
+                        "image_directory": str(cropped_dir.resolve()),  # Formato oficial: image_directory
+                        "cache_directory": str((cropped_dir / "cache_imgs").resolve()),  # Formato oficial: cache_directory
+                        "num_repeats": config['num_repeats']
+                    }]
+                }
+                
+                toml_path_musubi = cropped_dir / "dataset_qwen.toml"
+                with open(toml_path_musubi, "w", encoding="utf-8") as f:
+                    toml.dump(musubi_toml, f)
+                
+                # Criar diretório de cache para Musubi
+                cache_dir = cropped_dir / "cache_imgs"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                
+                QMessageBox.information(self, "Success", 
+                    "Dataset TOML files generated successfully!\n\n" +
+                    "• dataset.toml - For SDXL/Flux training (sd-scripts)\n" +
+                    "• dataset_qwen.toml - For Qwen-Image training (Musubi)")
+                
+                self.tree_model.clear()
+                self.populate_tree_view(self.dataset_path)
+                self.update_status()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error generating dataset TOML files: {str(e)}")
 
     def generate_toml(self):
         """Gera o arquivo dataset.toml"""
