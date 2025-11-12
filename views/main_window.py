@@ -17,7 +17,6 @@ class DatasetManagerGUI(QMainWindow):
     generate_toml_clicked = pyqtSignal()
     rename_and_convert_images_clicked = pyqtSignal()
     analyze_dataset_clicked = pyqtSignal()
-    start_training_clicked = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -152,7 +151,6 @@ class DatasetManagerGUI(QMainWindow):
         self.generate_toml_btn.clicked.connect(self.generate_toml_clicked.emit)
         self.rename_convert_btn.clicked.connect(self.rename_and_convert_images_clicked.emit)
         self.analyze_btn.clicked.connect(self.analyze_dataset_clicked.emit)
-        self.training_tabs.train_button.clicked.connect(self.start_training_clicked.emit)
         self.face_detection.clicked.connect(self.toggle_face_detection)
 
     def on_process_images_clicked(self):

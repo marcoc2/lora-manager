@@ -31,7 +31,6 @@ class MainController(QObject):
         self.view.generate_toml_clicked.connect(self.generate_all_toml)
         self.view.rename_and_convert_images_clicked.connect(self.rename_and_convert_images)
         self.view.analyze_dataset_clicked.connect(self.analyze_dataset)
-        self.view.start_training_clicked.connect(self.start_training)
 
     def select_dataset_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, "Select Dataset Folder")
@@ -309,24 +308,3 @@ class MainController(QObject):
             self.view.update_status(status_text)
         else:
             self.view.update_status("No dataset selected")
-
-    def start_training(self):
-        if not self.dataset_path:
-            self.view.show_warning("Warning", "Please select a dataset folder first!")
-            return
-        
-        try:
-            self.view.training_tabs.save_config()
-            
-            command = self.view.training_tabs.get_command(self.dataset_path)
-            if command is None:
-                return
-            
-            msg_box = self.view.show_message("Training Command", "The following command will be executed:", detailed_text=command)
-            
-            if msg_box.exec() == msg_box.StandardButton.Ok:
-                output_dialog = CommandOutputDialog(command, self.view)
-                output_dialog.exec()
-                
-        except Exception as e:
-            self.view.show_critical("Error", f"Error starting training: {str(e)}")
