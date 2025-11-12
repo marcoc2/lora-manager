@@ -1,0 +1,332 @@
+import sys
+import toml
+from pathlib import Path
+from PyQt6.QtWidgets import QFileDialog, QApplication
+from PyQt6.QtCore import QObject
+
+from views.main_window import DatasetManagerGUI
+from views.dialogs.suffix_input_dialog import SuffixInputDialog
+from views.dialogs.toml_config_dialog import TomlConfigDialog
+from views.dialogs.qwen_toml_config_dialog import QwenTomlConfigDialog
+from views.dialogs.caption_config_dialog import CaptionConfigDialog
+from models.image_processor import ImageProcessor
+from models.caption_generator import CaptionGenerator
+from models.danbooru_generator import DanbooruGenerator
+from models.janus_generator import JanusGenerator
+from training_widgets import CommandOutputDialog
+
+class MainController(QObject):
+    def __init__(self, view: DatasetManagerGUI):
+        super().__init__()
+        self.view = view
+        self.dataset_path = None
+        self.image_processor = ImageProcessor()
+
+        self.connect_signals()
+
+    def connect_signals(self):
+        self.view.select_dataset_folder_clicked.connect(self.select_dataset_folder)
+        self.view.process_images_clicked.connect(self.process_images)
+        self.view.generate_captions_clicked.connect(self.generate_captions)
+        self.view.generate_toml_clicked.connect(self.generate_all_toml)
+        self.view.rename_and_convert_images_clicked.connect(self.rename_and_convert_images)
+        self.view.analyze_dataset_clicked.connect(self.analyze_dataset)
+        self.view.start_training_clicked.connect(self.start_training)
+
+    def select_dataset_folder(self):
+        folder = QFileDialog.getExistingDirectory(self.view, "Select Dataset Folder")
+        if folder:
+            self.dataset_path = Path(folder).absolute()
+            self.view.populate_tree_view(self.dataset_path)
+            self.update_status()
+
+    def process_images(self, config):
+        if not self.dataset_path:
+            self.view.show_warning("Warning", "Please select a dataset folder first!")
+            return
+            
+        try:
+            input_dir = self.dataset_path
+            output_dir = self.dataset_path / "cropped_images"
+            
+            n_files = sum(1 for _ in input_dir.glob("*.[jp][pn][g]"))
+            if n_files == 0:
+                self.view.show_warning("Warning", "No images found in the input directory!")
+                return
+            
+            target_size = config['target_size']
+            self.image_processor.use_face_detection = config['use_face_detection']
+            
+            processed, failed = self.image_processor.process_directory(
+                input_dir,
+                output_dir,
+                target_size
+            )
+            
+            self.view.show_message("Success", 
+                f"Processing complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
+            
+            self.view.populate_tree_view(self.dataset_path)
+            self.update_status()
+            
+        except Exception as e:
+            self.view.show_critical("Error", f"Error processing images: {str(e)}")
+
+    def generate_captions(self):
+        if not self.dataset_path:
+            self.view.show_warning("Warning", "Please select a dataset folder first!")
+            return
+            
+        try:
+            cropped_dir = self.dataset_path / "cropped_images"
+            if not cropped_dir.exists():
+                self.view.show_warning("Warning", "Please process images first!")
+                return
+            
+            n_files = sum(1 for _ in cropped_dir.glob("*.[jp][pn][g]"))
+            if n_files == 0:
+                self.view.show_warning("Warning", "No images found in cropped_images folder!")
+                return
+            
+            config_dialog = CaptionConfigDialog(self.view)
+            if config_dialog.exec() != config_dialog.DialogCode.ACCEPTED:
+                return
+                
+            config = config_dialog.get_values()
+            
+            progress = self.view.show_progress_dialog("Generating captions...", "Cancel", 0, 100)
+            progress.show()
+            
+            def update_progress(message: str, value: int):
+                if value >= 0:
+                    progress.setLabelText(message)
+                    progress.setValue(value)
+            
+            captions_dir = cropped_dir / "captions"
+            
+            if config['method'] == "Florence-2":
+                generator = CaptionGenerator()
+            elif config['method'] == "Danbooru":
+                model_type = config.get('model_type', 'vit')
+                generator = DanbooruGenerator(model_type=model_type)
+            else:  # Janus-7B
+                generator = JanusGenerator()
+                if config['janus_context']:
+                    if config['replace_prompt']:
+                        generator.set_prompt(config['janus_context'])
+                    else:
+                        generator.add_context(config['janus_context'])
+            
+            processed, failed = generator.process_directory(
+                cropped_dir,
+                captions_dir,
+                prefix=config['prefix'],
+                progress_callback=update_progress
+            )
+            
+            progress.close()
+            
+            self.view.show_message("Success", 
+                f"Caption generation complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
+            
+            self.view.populate_tree_view(self.dataset_path)
+            self.update_status()
+            
+        except Exception as e:
+            import traceback
+            error_msg = f"Error generating captions:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            self.view.show_critical("Error", error_msg)
+
+    def generate_all_toml(self):
+        if not self.dataset_path:
+            self.view.show_warning("Warning", "Please select a dataset folder first!")
+            return
+        
+        try:
+            dialog = QwenTomlConfigDialog(self.view)
+            if dialog.exec() == dialog.DialogCode.ACCEPTED:
+                config = dialog.get_values()
+                
+                if self.dataset_path.name == "cropped_images":
+                    cropped_dir = self.dataset_path
+                else:
+                    cropped_dir = self.dataset_path / "cropped_images"
+                    cropped_dir.mkdir(parents=True, exist_ok=True)
+                
+                sdscripts_toml = {
+                    "general": {
+                        "shuffle_caption": False,
+                        "caption_extension": ".txt",
+                        "keep_tokens": 1
+                    },
+                    "datasets": [{
+                        "resolution": config['resolution'][0],
+                        "batch_size": 1,
+                        "keep_tokens": 1,
+                        "subsets": [{
+                            "image_dir": str(cropped_dir.resolve()),
+                            "class_tokens": "",
+                            "num_repeats": config['num_repeats']
+                        }]
+                    }]
+                }
+                
+                toml_path_sdscripts = cropped_dir / "dataset.toml"
+                with open(toml_path_sdscripts, "w", encoding="utf-8") as f:
+                    toml.dump(sdscripts_toml, f)
+                
+                musubi_toml = {
+                    "general": {
+                        "resolution": config['resolution'],
+                        "caption_extension": config['caption_extension'],
+                        "batch_size": config['batch_size'],
+                        "enable_bucket": config['enable_bucket'],
+                        "bucket_no_upscale": config['bucket_no_upscale']
+                    },
+                    "datasets": [{
+                        "image_directory": str(cropped_dir.resolve()),
+                        "cache_directory": str((cropped_dir / "cache_imgs").resolve()),
+                        "num_repeats": config['num_repeats']
+                    }]
+                }
+                
+                toml_path_musubi = cropped_dir / "dataset_qwen.toml"
+                with open(toml_path_musubi, "w", encoding="utf-8") as f:
+                    toml.dump(musubi_toml, f)
+                
+                cache_dir = cropped_dir / "cache_imgs"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                
+                self.view.show_message("Success", 
+                    "Dataset TOML files generated successfully!\n\n" +
+                    "• dataset.toml - For SDXL/Flux training (sd-scripts)\n" +
+                    "• dataset_qwen.toml - For Qwen-Image training (Musubi)")
+                
+                self.view.populate_tree_view(self.dataset_path)
+                self.update_status()
+                
+        except Exception as e:
+            self.view.show_critical("Error", f"Error generating dataset TOML files: {str(e)}")
+
+    def rename_and_convert_images(self):
+        if not self.dataset_path:
+            self.view.show_warning("Warning", "Please select a dataset folder first!")
+            return
+
+        dialog = SuffixInputDialog(self.view)
+        if dialog.exec() != dialog.DialogCode.ACCEPTED:
+            return
+        suffix = dialog.get_suffix()
+        if not suffix:
+            self.view.show_warning("Warning", "Suffix cannot be empty!")
+            return
+
+        image_dir = self.dataset_path / "cropped_images"
+        if not image_dir.exists():
+            self.view.show_warning("Warning", "Cropped images directory does not exist!")
+            return
+
+        image_files = list(image_dir.glob("*.[jp][pn][g]")) + list(image_dir.glob("*.webp"))
+        if not image_files:
+            self.view.show_warning("Warning", "No images found to rename and convert!")
+            return
+
+        converted_count = 0
+
+        for idx, image_path in enumerate(sorted(image_files), 1):
+            try:
+                new_name = f"{image_path.stem}{suffix}_{str(idx).zfill(3)}.png"
+                new_path = image_dir / new_name
+
+                with Image.open(image_path) as img:
+                    img = img.convert("RGB")
+                    img.save(new_path, "PNG")
+
+                if image_path.suffix.lower() != ".png":
+                    image_path.unlink()
+
+                converted_count += 1
+            except Exception as e:
+                self.view.show_warning("Error", f"Failed to process {image_path.name}: {e}")
+
+        self.view.show_message("Success", f"Renamed and converted {converted_count} images successfully!")
+        self.view.populate_tree_view(self.dataset_path)
+
+    def analyze_dataset(self):
+        if not self.dataset_path:
+            self.view.show_warning("Warning", "Please select a dataset folder first!")
+            return
+            
+        try:
+            stats = {
+                "total_images": 0,
+                "total_captions": 0,
+                "missing_captions": []
+            }
+            
+            images_dir = self.dataset_path / "cropped_images"
+            if images_dir.exists():
+                stats["total_images"] = len(list(images_dir.glob("*.[jp][pn][g]")))
+            
+            captions_dir = images_dir / "captions"
+            if captions_dir.exists():
+                stats["total_captions"] = len(list(captions_dir.glob("*.txt")))
+                
+                for img_path in images_dir.glob("*.[jp][pn][g]"):
+                    caption_path = captions_dir / f"{img_path.stem}.txt"
+                    if not caption_path.exists():
+                        stats["missing_captions"].append(img_path.name)
+            
+            msg = f"""Dataset Analysis:\n\nTotal Images: {stats['total_images']}\nTotal Captions: {stats['total_captions']}\nMissing Captions: {len(stats['missing_captions'])}"""
+
+            if stats["missing_captions"]:
+                msg += "\n\nFiles missing captions:"
+                for file in stats["missing_captions"][:10]:
+                    msg += f"\n- {file}"
+                if len(stats["missing_captions"]) > 10:
+                    msg += f"\n... and {len(stats['missing_captions']) - 10} more"
+            
+            self.view.show_message("Dataset Analysis", msg)
+        
+        except Exception as e:
+            self.view.show_critical("Error", f"Error analyzing dataset: {str(e)}")
+
+    def update_status(self):
+        if self.dataset_path:
+            status_text = f"Dataset: {self.dataset_path}"
+            
+            cropped_path = self.dataset_path / "cropped_images"
+            captions_path = self.dataset_path / "cropped_images/captions"
+            
+            if cropped_path.exists():
+                n_images = len(list(cropped_path.glob("*.[jp][pn][g]")))
+                status_text += f"\nImages: {n_images}"
+            
+            if captions_path.exists():
+                n_captions = len(list(captions_path.glob("*.txt")))
+                status_text += f"\nCaptions: {n_captions}"
+                
+            self.view.update_status(status_text)
+        else:
+            self.view.update_status("No dataset selected")
+
+    def start_training(self):
+        if not self.dataset_path:
+            self.view.show_warning("Warning", "Please select a dataset folder first!")
+            return
+        
+        try:
+            self.view.training_tabs.save_config()
+            
+            command = self.view.training_tabs.get_command(self.dataset_path)
+            if command is None:
+                return
+            
+            msg_box = self.view.show_message("Training Command", "The following command will be executed:", detailed_text=command)
+            
+            if msg_box.exec() == msg_box.StandardButton.Ok:
+                output_dialog = CommandOutputDialog(command, self.view)
+                output_dialog.exec()
+                
+        except Exception as e:
+            self.view.show_critical("Error", f"Error starting training: {str(e)}")

@@ -104,7 +104,7 @@ class JanusGenerator:
                     "content": f"<image_placeholder>\n{prompt}",
                     "images": [image],
                 },
-                {"role": "<|Assistant|>", "content": ""},
+                {"role": "<|Assistant|", "content": ""},
             ]
             
             # Prepara inputs como no Gradio

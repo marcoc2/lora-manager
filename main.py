@@ -1,15 +1,15 @@
-#!/usr/bin/env python3
-"""
-Redirects to main-gui.py for backward compatibility
-"""
 import sys
-import subprocess
-from pathlib import Path
+from PyQt6.QtWidgets import QApplication
+
+from views.main_window import DatasetManagerGUI
+from controllers.main_controller import MainController
 
 def main():
-    # Execute main-gui.py instead
-    main_gui = Path(__file__).parent / "main-gui.py"
-    subprocess.run([sys.executable, str(main_gui)] + sys.argv[1:])
+    app = QApplication(sys.argv)
+    view = DatasetManagerGUI()
+    controller = MainController(view)
+    view.show()
+    sys.exit(app.exec())
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
