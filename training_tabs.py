@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                             QMessageBox)
 from training_widgets import TrainingWidgets
 from flux_widgets_ui import FluxTrainingWidgets
+from qwen_widgets_ui import QwenTrainingWidgets
 from queue_manager import QueueManager
 
 class TrainingTabs(QWidget):
@@ -20,14 +21,17 @@ class TrainingTabs(QWidget):
         # Create training widgets
         self.training_widget = TrainingWidgets(self)
         self.flux_widget = FluxTrainingWidgets(self)
+        self.qwen_widget = QwenTrainingWidgets(self)
         
         # Add widgets to tabs
         self.tabs.addTab(self.training_widget, "LoRA Training")
         self.tabs.addTab(self.flux_widget, "Flux Training")
+        self.tabs.addTab(self.qwen_widget, "Qwen-Image Training")
         
         # Connect training buttons to queue
         self.training_widget.train_button.clicked.connect(self.queue_training_task)
         self.flux_widget.train_button.clicked.connect(self.queue_flux_training_task)
+        self.qwen_widget.train_button.clicked.connect(self.queue_qwen_training_task)
         
         # Create queue manager
         self.queue_manager = QueueManager()
@@ -90,7 +94,32 @@ class TrainingTabs(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
 
+    def queue_qwen_training_task(self):
+        """Add a Qwen-Image training task to the queue"""
+        if not self.parent.dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
+            return
+            
+        try:
+            # Save current config
+            self.qwen_widget.save_current_config()
+            
+            # Get command
+            command = self.qwen_widget.get_command(self.parent.dataset_path)
+            if command is None:
+                return
+                
+            # Add to queue
+            output_name = self.qwen_widget.output_name.text() or "qwen_training"
+            print(f"Queueing task: {output_name}")  # Debug print
+            self.queue_manager.add_task(command, self.parent.dataset_path, output_name)
+            QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
+
     def save_config(self):
-        """Save configurations for both widgets"""
+        """Save configurations for all widgets"""
         self.training_widget.save_current_config()
         self.flux_widget.save_current_config()
+        self.qwen_widget.save_current_config()

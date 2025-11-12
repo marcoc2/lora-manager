@@ -229,6 +229,34 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
 
+        # Resume Training
+        resume_group = QGroupBox("Resume Training")
+        resume_layout = QFormLayout()
+        
+        self.resume_checkbox = QCheckBox("Resume from checkpoint")
+        self.resume_checkbox.setChecked(self.config.get("resume_training", False))
+        self.resume_path = QLineEdit()
+        self.resume_path.setText(self.config.get("resume_path", ""))
+        self.resume_path.setEnabled(False)
+        self.resume_path.setPlaceholderText("Path to network weights file (.safetensors or .pt)")
+        select_resume = QPushButton("Browse")
+        select_resume.setEnabled(False)
+        
+        resume_path_layout = QHBoxLayout()
+        resume_path_layout.addWidget(self.resume_path)
+        resume_path_layout.addWidget(select_resume)
+        
+        resume_layout.addRow(self.resume_checkbox)
+        resume_layout.addRow("Resume path:", resume_path_layout)
+        
+        # Connect signals
+        self.resume_checkbox.toggled.connect(lambda checked: self.resume_path.setEnabled(checked))
+        self.resume_checkbox.toggled.connect(lambda checked: select_resume.setEnabled(checked))
+        select_resume.clicked.connect(self.select_resume_path)
+        
+        resume_group.setLayout(resume_layout)
+        layout.addWidget(resume_group)
+
         # Cache and Convert buttons
         cache_group = QGroupBox("Cache and Convert")
         cache_layout = QVBoxLayout()
@@ -278,6 +306,11 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         if folder:
             self.musubi_dir.setText(folder)
 
+    def select_resume_path(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Resume Checkpoint", "", "Checkpoint Files (*.safetensors *.pt)")
+        if file_path:
+            self.resume_path.setText(file_path)
+
     def select_output_path(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if folder:
@@ -319,6 +352,8 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
             "network_args": "",
             "optimizer_args": "",
             "flip_aug": self.flip_aug.isChecked(),
+            "resume_training": self.resume_checkbox.isChecked(),
+            "resume_path": self.resume_path.text(),
             "additional_params": ""
         }
 
@@ -551,6 +586,7 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
             "--text_encoder", self.text_encoder_path.text(),
             "--dataset_config", str(dataset_config),
             "--output_dir", self.output_dir.text(),
+            "--output_name", self.output_name.text(),
             "--network_module", "networks.lora_qwen_image",
             "--fp8_base",  # Crucial for VRAM reduction with Qwen-Image
             "--network_dim", str(self.network_dim.value()),
@@ -579,6 +615,10 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
 
         if self.flip_aug.isChecked():
             command.append("--flip_aug")
+
+        # Resume training
+        if self.resume_checkbox.isChecked() and self.resume_path.text():
+            command.extend(["--network_weights", self.resume_path.text()])
 
         return command
 
