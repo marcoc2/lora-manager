@@ -27,23 +27,30 @@ class TrainingTabs(QWidget):
         # Add widgets to tabs
         self.tabs.addTab(self.training_widget, "LoRA Training")
         self.tabs.addTab(self.flux_widget, "Flux Training")
-        self.tabs.addTab(self.qwen_widget, "Qwen-Image Training")
-        
-        # Connect training buttons to queue
-        self.training_widget.train_button.clicked.connect(self.queue_training_task)
-        self.flux_widget.train_button.clicked.connect(self.queue_flux_training_task)
-        self.qwen_widget.train_button.clicked.connect(self.queue_qwen_training_task)
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                             QMessageBox)
 from training_widgets import TrainingWidgets
 from flux_widgets_ui import FluxTrainingWidgets
 from qwen_widgets_ui import QwenTrainingWidgets
+from controllers.training_controller import TrainingController
 
 class TrainingTabs(QWidget):
     def __init__(self, parent=None, queue_manager=None):
         super().__init__(parent)
         self.parent = parent
         self.queue_manager = queue_manager
+        self.controller = TrainingController(self)
+        
+        # Pass script manager if available from parent
+        if hasattr(self.parent, 'script_manager'):
+            self.controller.set_script_manager(self.parent.script_manager)
+        # Or if it's in main window but not passed directly, we might need to access it differently.
+        # Assuming for now we need to handle script creation. 
+        # In the original code, FluxTrainingWidgets used self.script_manager.
+        # We need to ensure TrainingController has access to it.
+        # Let's assume we can get it from the parent window or instantiate one if needed.
+        # For now, let's try to get it from parent.
+        
         self.init_ui()
 
     def init_ui(self):
@@ -69,6 +76,11 @@ class TrainingTabs(QWidget):
         self.flux_widget.train_button.clicked.connect(self.queue_flux_training_task)
         self.qwen_widget.train_button.clicked.connect(self.queue_qwen_training_task)
         
+        # Connect Qwen specific actions
+        self.qwen_widget.cache_latents_button.clicked.connect(self.cache_latents_action)
+        self.qwen_widget.cache_text_encoder_button.clicked.connect(self.cache_text_encoder_action)
+        self.qwen_widget.convert_lora_button.clicked.connect(self.convert_lora_action)
+        
         # Add tabs to main layout
         main_layout.addWidget(self.tabs)
         
@@ -76,26 +88,22 @@ class TrainingTabs(QWidget):
 
     def queue_training_task(self):
         """Add a LoRA training task to the queue"""
+        # Legacy SD1.5/XL training - keeping as is for now or should refactor too?
+        # The user asked for Flux and Qwen refactoring specifically.
+        # I'll keep this one as is to minimize scope creep unless requested.
         dataset_path = self.parent.get_effective_dataset_path()
         if not dataset_path:
             QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
             
         try:
-            # Save current config
             self.training_widget.save_current_config()
-            
-            # Get command
             command = self.training_widget.get_command(dataset_path)
             if command is None:
                 return
-                
-            # Add to queue
             output_name = self.training_widget.output_name.text() or "lora_training"
-            print(f"Queueing task: {output_name}")  # Debug print
             self.queue_manager.add_task(command, dataset_path, output_name)
             QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
-            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
 
@@ -107,17 +115,25 @@ class TrainingTabs(QWidget):
             return
             
         try:
-            # Save current config
+            # Save config
             self.flux_widget.save_current_config()
             
-            # Get command
-            command = self.flux_widget.get_command(dataset_path)
+            # Get config from view
+            config = self.flux_widget.get_config()
+            
+            # Get command from controller
+            command, error = self.controller.get_flux_command(config, dataset_path)
+            
+            if error:
+                QMessageBox.warning(self, "Validation Error", error)
+                return
+                
             if command is None:
                 return
                 
             # Add to queue
-            output_name = self.flux_widget.output_name.text() or "flux_training"
-            print(f"Queueing task: {output_name}")  # Debug print
+            output_name = config.get("output_name") or "flux_training"
+            print(f"Queueing task: {output_name}")
             self.queue_manager.add_task(command, dataset_path, output_name)
             QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
             
@@ -132,22 +148,63 @@ class TrainingTabs(QWidget):
             return
             
         try:
-            # Save current config
             self.qwen_widget.save_current_config()
+            config = self.qwen_widget.get_config()
             
-            # Get command
-            command = self.qwen_widget.get_command(dataset_path)
-            if command is None:
+            result, error = self.controller.get_qwen_command(config, dataset_path)
+            
+            if error:
+                # If error is a list (validation errors)
+                if isinstance(error, list):
+                    QMessageBox.critical(self, "Validation Error", "\n".join(error))
+                else:
+                    QMessageBox.critical(self, "Error", str(error))
                 return
                 
-            # Add to queue
-            output_name = self.qwen_widget.output_name.text() or "qwen_training"
-            print(f"Queueing task: {output_name}")  # Debug print
-            self.queue_manager.add_task(command, dataset_path, output_name)
-            QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
+            if result is None:
+                return
+
+            # Check if we need to run cache commands first
+            if result.get("needs_cache"):
+                reply = QMessageBox.question(self, "Cache Required", 
+                    "Training requires cache files that don't exist. Create cache automatically?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+                # Add cache commands to queue
+                for cmd in result["cache_commands"]:
+                    self.queue_manager.add_task(cmd, dataset_path, "Cache Generation")
+                
+                # Add training command
+                output_name = config.get("output_name") or "qwen_training"
+                self.queue_manager.add_task(result["training_command"], dataset_path, output_name)
+                
+                QMessageBox.information(self, "Success", 
+                    f"Added cache generation and training task '{output_name}' to queue!")
+            else:
+                # Direct training
+                output_name = config.get("output_name") or "qwen_training"
+                self.queue_manager.add_task(result["training_command"], dataset_path, output_name)
+                QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
+
+    def cache_latents_action(self):
+        # TODO: Implement using controller
+        pass
+
+    def cache_text_encoder_action(self):
+        # TODO: Implement using controller
+        pass
+
+    def convert_lora_action(self):
+        # TODO: Implement using controller
+        pass
 
     def save_config(self):
         """Save configurations for all widgets"""

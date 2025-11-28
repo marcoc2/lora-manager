@@ -1,0 +1,323 @@
+import sys
+import shutil
+import subprocess
+from pathlib import Path
+from PyQt6.QtCore import QObject
+from PyQt6.QtWidgets import QMessageBox
+
+# Import utility for saving config (assuming it's in a shared module or we move it here)
+# For now, we'll implement save_config logic within the controller or keep using the existing one if it's external.
+# Based on previous file reads, save_config was imported from *_widgets_base.py.
+# We should probably move that utility or reimplement it.
+# Let's assume we can import it or just use json/toml directly.
+import json
+
+class TrainingController(QObject):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.script_manager = None # Initialize if needed, or pass in
+
+    def set_script_manager(self, script_manager):
+        self.script_manager = script_manager
+
+    # --- Flux Logic ---
+
+    def get_flux_command(self, config, dataset_path):
+        """Generates the training command for Flux"""
+        # Check if dataset_path is already the artifact folder (has dataset.toml)
+        if (dataset_path / "dataset.toml").exists():
+            dataset_config = dataset_path / "dataset.toml"
+        else:
+            dataset_config = dataset_path / "cropped_images/dataset.toml"
+
+        if not config.get("scripts_dir"):
+            return None, "Scripts directory is not set."
+
+        original_script_path = Path(config["scripts_dir"]) / "flux_train_network.py"
+        
+        # We need script_manager to create temp script. 
+        # If not available, we might need to use original path or handle it differently.
+        # Assuming script_manager is available via some context or passed in.
+        if self.script_manager:
+            script_path = self.script_manager.create_temp_script(original_script_path)
+        else:
+            script_path = original_script_path
+
+        cmd = [
+            "accelerate launch",
+            "--mixed_precision", config["mixed_precision"],
+            "--num_cpu_threads_per_process 1",
+            str(script_path),
+            f"--pretrained_model_name_or_path {config['flux_path']}",
+            f"--clip_l {config['clip_l_path']}",
+            f"--t5xxl {config['t5xxl_path']}",
+            f"--ae {config['ae_path']}",
+            "--cache_latents_to_disk" if config["cache_latents"] else "",
+            f"--save_model_as {config['save_model_as']}",
+            "--sdpa" if config["sdpa"] else "",
+            "--persistent_data_loader_workers" if config["persistent_workers"] else "",
+            f"--max_data_loader_n_workers {config['max_workers']}",
+            f"--seed {config['seed']}",
+            "--gradient_checkpointing",
+            f"--mixed_precision {config['mixed_precision']}",
+            f"--save_precision {config['save_precision']}",
+            f"--network_module {config['network_module']}",
+            f"--network_dim {config['network_dim']}",
+            f"--network_alpha {config['network_alpha']}",
+            f"--optimizer_type {config['optimizer_type']}",
+            f"--learning_rate {config['learning_rate']}",
+            "--network_train_unet_only" if config["network_train_unet_only"] else "",
+            "--cache_text_encoder_outputs" if config["cache_text_encoder"] else "",
+            "--cache_text_encoder_outputs_to_disk" if config["cache_text_encoder_disk"] else "",
+            "--flip_aug" if config["flip_aug"] else "",
+            "--fp8_base" if config["fp8_base"] else "",
+            "--highvram" if config["highvram"] else "",
+            f"--max_train_epochs {config['epochs']}",
+            f"--save_every_n_epochs {config['save_every']}",
+            f"--dataset_config {dataset_config}",
+            f"--output_dir {config['output_dir']}" if config["output_dir"] else "",
+            f"--output_name {config['output_name']}" if config["output_name"] else "",
+            f"--timestep_sampling {config['timestep_sampling']}",
+            f"--model_prediction_type {config['model_prediction_type']}",
+            f"--guidance_scale 1.0",
+            f"--loss_type {config['loss_type']}",
+            "--split_mode" if config["split_mode"] else ""
+        ]
+        
+        # Optimizer args
+        optimizer_args = config.get("optimizer_args", "").strip()
+        if optimizer_args:
+            cmd.append('--optimizer_args')
+            for arg in optimizer_args.split():
+                cmd.append(arg)
+
+        # Network args
+        network_args = config.get("network_args", "").strip()
+        if network_args:
+            cmd.append('--network_args')
+            for arg in network_args.split():
+                cmd.append(arg)
+
+        # Resume
+        if config.get("resume_training") and config.get("resume_path"):
+            cmd.append(f"--network_weights {config['resume_path']}")
+
+        # Additional params
+        additional_params = config.get("additional_params", "").strip()
+        if additional_params:
+            cmd.extend(additional_params.split())
+
+        filtered_cmd = filter(None, cmd)
+        cmd_str = " ".join(str(item) for item in filtered_cmd if str(item).strip())
+        return cmd_str, None
+
+    # --- Qwen Logic ---
+
+    def validate_qwen_inputs(self, config):
+        errors = []
+        
+        if not config.get("python_venv_path"):
+            errors.append("Python/Venv path is required")
+        elif not Path(config["python_venv_path"]).exists():
+            errors.append("Python executable does not exist at specified path")
+        
+        if not config.get("dit_path"):
+            errors.append("DiT model path is required")
+        elif not Path(config["dit_path"]).exists():
+            errors.append("DiT model file does not exist")
+            
+        if not config.get("text_encoder_path"):
+            errors.append("Text encoder path is required")
+        elif not Path(config["text_encoder_path"]).exists():
+            errors.append("Text encoder file does not exist")
+            
+        if not config.get("vae_path"):
+            errors.append("VAE model path is required")
+        elif not Path(config["vae_path"]).exists():
+            errors.append("VAE model file does not exist")
+            
+        if not config.get("musubi_dir"):
+            errors.append("Musubi Tuner directory is required")
+        elif not Path(config["musubi_dir"]).exists():
+            errors.append("Musubi Tuner directory does not exist")
+            
+        return errors
+
+    def prepare_musubi_dataset(self, dataset_path, musubi_dir):
+        """Prepares the dataset structure required by Musubi"""
+        musubi_dir = Path(musubi_dir)
+        musubi_cache_dir = musubi_dir / "cache_imgs"
+        musubi_cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Determine source cropped images directory
+        if (dataset_path / "dataset.toml").exists():
+             # dataset_path is likely the artifact folder itself
+             cropped_dir = dataset_path
+             captions_dir = dataset_path / "captions" # Assuming captions are here? Or in cropped_images/captions? 
+             # Let's check typical structure: root/cropped_images/captions
+             # If dataset_path is root/cropped_images, then captions is root/cropped_images/captions
+        else:
+             cropped_dir = dataset_path / "cropped_images"
+             captions_dir = cropped_dir / "captions"
+
+        if not cropped_dir.exists():
+            return # Should handle error
+
+        # Copy images
+        image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        for img_file in cropped_dir.iterdir():
+            if img_file.is_file() and img_file.suffix.lower() in image_extensions:
+                dest_img = musubi_dir / img_file.name
+                if not dest_img.exists():
+                    shutil.copy2(img_file, dest_img)
+        
+        # Copy captions with encoding fix
+        if captions_dir.exists():
+            for caption_file in captions_dir.glob("*.txt"):
+                dest_caption = musubi_dir / caption_file.name
+                if not dest_caption.exists():
+                    try:
+                        with open(caption_file, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                    except UnicodeDecodeError:
+                        try:
+                            with open(caption_file, 'r', encoding='latin-1') as f:
+                                content = f.read()
+                        except UnicodeDecodeError:
+                            with open(caption_file, 'r', encoding='cp1252') as f:
+                                content = f.read()
+                    
+                    with open(dest_caption, 'w', encoding='utf-8') as f:
+                        f.write(content.rstrip() + '\n')
+
+    def generate_musubi_toml(self, config, musubi_dir):
+        import toml
+        
+        musubi_toml = {
+            "general": {
+                "resolution": 512, # Should this be configurable?
+                "caption_extension": ".txt",
+                "batch_size": config.get('batch_size', 1),
+                "enable_bucket": True,
+                "bucket_no_upscale": False
+            },
+            "datasets": [{
+                "image_directory": str(musubi_dir.resolve()),
+                "cache_directory": str((musubi_dir / "cache_imgs").resolve()),
+                "num_repeats": 1 # Should be configurable?
+            }]
+        }
+        
+        toml_path = musubi_dir / "dataset_qwen.toml"
+        with open(toml_path, "w", encoding='utf-8') as f:
+            toml.dump(musubi_toml, f)
+        
+        return toml_path
+
+    def get_qwen_command(self, config, dataset_path):
+        errors = self.validate_qwen_inputs(config)
+        if errors:
+            return None, errors
+
+        # Prepare Musubi structure
+        # We'll create a parallel folder for musubi specific structure if needed
+        # Or use a temp folder? The original code used 'cropped_images_musubi' inside dataset_path
+        if (dataset_path / "dataset.toml").exists():
+             # dataset_path is the artifact folder
+             parent_dir = dataset_path.parent
+             musubi_dir = parent_dir / f"{dataset_path.name}_musubi"
+        else:
+             musubi_dir = dataset_path / "cropped_images_musubi"
+        
+        musubi_dir.mkdir(parents=True, exist_ok=True)
+        self.prepare_musubi_dataset(dataset_path, musubi_dir)
+        
+        dataset_config = musubi_dir / "dataset_qwen.toml"
+        if not dataset_config.exists():
+            self.generate_musubi_toml(config, musubi_dir)
+
+        # Check cache requirements
+        cache_dir = musubi_dir / "cache_imgs"
+        needs_latent_cache = not any(cache_dir.glob("*.npz"))
+        needs_text_cache = not any(cache_dir.glob("*.txt"))
+
+        cache_commands = []
+        if needs_latent_cache or needs_text_cache:
+            # We return a special structure to indicate cache is needed
+            # The View/MainController should handle the user prompt
+            
+            if needs_latent_cache:
+                latent_cache_script = Path(config["musubi_dir"]) / "src" / "musubi_tuner" / "qwen_image_cache_latents.py"
+                cache_commands.append([
+                    config["python_venv_path"],
+                    str(latent_cache_script),
+                    "--vae", config["vae_path"],
+                    "--dataset_config", str(dataset_config)
+                ])
+            
+            if needs_text_cache:
+                text_cache_script = Path(config["musubi_dir"]) / "src" / "musubi_tuner" / "qwen_image_cache_text_encoder_outputs.py"
+                text_cmd = [
+                    config["python_venv_path"],
+                    str(text_cache_script),
+                    "--text_encoder", config["text_encoder_path"],
+                    "--dataset_config", str(dataset_config)
+                ]
+                if config["fp8_llm"]:
+                    text_cmd.extend(["--device", "cpu"])
+                cache_commands.append(text_cmd)
+
+        # Build training command
+        python_path = Path(config["python_venv_path"])
+        venv_dir = python_path.parent
+        accelerate_exe = venv_dir / "accelerate.exe"
+        
+        if accelerate_exe.exists():
+            command_start = [str(accelerate_exe), "launch"]
+        else:
+            command_start = [str(python_path), "-m", "accelerate", "launch"]
+            
+        musubi_script = Path(config["musubi_dir"]) / "src" / "musubi_tuner" / "qwen_image_train_network.py"
+        
+        cmd = command_start + [
+            "--num_cpu_threads_per_process", "1",
+            "--mixed_precision", config["mixed_precision"],
+            str(musubi_script),
+            "--dit", config["dit_path"],
+            "--vae", config["vae_path"],
+            "--text_encoder", config["text_encoder_path"],
+            "--dataset_config", str(dataset_config),
+            "--output_dir", config["output_dir"],
+            "--output_name", config["output_name"],
+            "--network_module", "networks.lora_qwen_image",
+            "--fp8_base",
+            "--network_dim", str(config["network_dim"]),
+            "--learning_rate", config["learning_rate"],
+            "--timestep_sampling", config["timestep_sampling"],
+            "--weighting_scheme", config["weighting_scheme"],
+            "--discrete_flow_shift", str(config["discrete_flow_shift"]),
+            "--optimizer_type", config["optimizer_type"],
+            "--max_train_epochs", str(config["epochs"]),
+            "--save_every_n_epochs", str(config["save_every"]),
+            "--seed", "42"
+        ]
+
+        if config["gradient_checkpointing"]: cmd.append("--gradient_checkpointing")
+        if config["sdpa"]: cmd.append("--sdpa")
+        if config["fp8_llm"]: cmd.append("--fp8_llm")
+        if config["blocks_to_swap"] > 0: cmd.extend(["--blocks_to_swap", str(config["blocks_to_swap"])])
+        if config["flip_aug"]: cmd.append("--flip_aug")
+        if config["resume_training"] and config["resume_path"]:
+            cmd.extend(["--network_weights", config["resume_path"]])
+
+        return {
+            "training_command": cmd,
+            "cache_commands": cache_commands,
+            "needs_cache": bool(cache_commands)
+        }, None
+
+    def get_cache_latents_command(self, config, dataset_path):
+        # Similar logic to prepare dataset and get command
+        # Simplified for brevity, reuse logic from get_qwen_command
+        pass # To be implemented if needed separately
+

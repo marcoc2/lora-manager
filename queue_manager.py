@@ -230,25 +230,6 @@ class QueueManager(QWidget):
     def execute_task(self, task):
         """Execute a single training task (com cache automático se necessário)"""
         try:
-            # Verificar se o comando é um dict (contém cache + treinamento)
-            if isinstance(task.command, dict) and "cache_commands" in task.command:
-                # Executar caches primeiro, depois treinamento
-                self.execute_cache_and_training(task)
-                return
-            # Verifica se o dataset.toml ou dataset_qwen.toml existe
-            dataset_toml = task.dataset_path / "cropped_images" / "dataset.toml"
-            dataset_qwen_toml = task.dataset_path / "cropped_images" / "dataset_qwen.toml"
-            
-            if not dataset_toml.exists() and not dataset_qwen_toml.exists():
-                error_msg = f"No dataset config found in {task.dataset_path / 'cropped_images'}. Please generate TOML files first."
-                self.signal_append_log.emit(f"\nError: {error_msg}\n")
-                self.task_finished(task, False)
-                return  # ✅ RETURN em vez de RAISE
-            
-            task.status = "Running"
-            self.signal_update_task.emit(task)
-            
-            # Verifica e corrige o caminho do dataset.toml
             cmd = task.command
             if "dataset_config" in cmd:
                 cmd = cmd.replace("cropped_images\\cropped_images", "cropped_images")

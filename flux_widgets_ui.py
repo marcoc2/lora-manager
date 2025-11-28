@@ -403,9 +403,9 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
             self.output_dir.setText(path)
             self.save_current_config()
 
-    def save_current_config(self):
-        """Salva a configuração atual no arquivo JSON"""
-        config = {
+    def get_config(self):
+        """Returns the current configuration as a dictionary"""
+        return {
             "flux_path": self.flux_path.text(),
             "clip_l_path": self.clip_l_path.text(),
             "t5xxl_path": self.t5xxl_path.text(),
@@ -440,89 +440,11 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
             "network_alpha": self.network_alpha.value(),
             "network_args": self.network_args.text(),
             "flip_aug": self.flip_aug.isChecked(),
-            "additional_params": self.additional_params.text()
+            "additional_params": self.additional_params.text(),
+            "resume_training": self.resume_checkbox.isChecked(),
+            "resume_path": self.resume_path.text()
         }
-        save_config(config)
 
-    def get_command(self, dataset_path):
-        """Gera o comando de treinamento para o Flux"""
-        # Check if dataset_path is already the artifact folder (has dataset.toml)
-        if (dataset_path / "dataset.toml").exists():
-            dataset_config = dataset_path / "dataset.toml"
-        else:
-            dataset_config = dataset_path / "cropped_images/dataset.toml"
-
-        original_script_path = Path(self.scripts_dir.text()) / "flux_train_network.py"
-        script_path = self.script_manager.create_temp_script(original_script_path)
-
-        cmd = [
-            "accelerate launch",
-            "--mixed_precision", self.mixed_precision.currentText(),
-            "--num_cpu_threads_per_process 1",
-            str(script_path),
-            f"--pretrained_model_name_or_path {self.flux_path.text()}",
-            f"--clip_l {self.clip_l_path.text()}",
-            f"--t5xxl {self.t5xxl_path.text()}",
-            f"--ae {self.ae_path.text()}",
-            "--cache_latents_to_disk" if self.cache_latents.isChecked() else "",
-            f"--save_model_as {self.save_model_as.currentText()}",
-            "--sdpa" if self.sdpa.isChecked() else "",
-            "--persistent_data_loader_workers" if self.persistent_workers.isChecked() else "",
-            f"--max_data_loader_n_workers {self.max_workers.value()}",
-            f"--seed {self.seed.value()}",
-            "--gradient_checkpointing",
-            f"--mixed_precision {self.mixed_precision.currentText()}",
-            f"--save_precision {self.save_precision.currentText()}",
-            f"--network_module {self.network_module.text()}",
-            f"--network_dim {self.network_dim.value()}",
-            f"--network_alpha {self.network_alpha.value()}",
-            f"--optimizer_type {self.optimizer_type.text()}",
-            f"--learning_rate {self.learning_rate.text()}",
-            "--network_train_unet_only" if self.network_train_unet_only.isChecked() else "",
-            "--cache_text_encoder_outputs" if self.cache_text_encoder.isChecked() else "",
-            "--cache_text_encoder_outputs_to_disk" if self.cache_text_encoder_disk.isChecked() else "",
-            "--flip_aug" if self.flip_aug.isChecked() else "",
-            "--fp8_base" if self.fp8_base.isChecked() else "",
-            "--highvram" if self.highvram.isChecked() else "",
-            f"--max_train_epochs {self.epochs.value()}",
-            f"--save_every_n_epochs {self.save_every.value()}",
-            f"--dataset_config {dataset_config}",
-            f"--output_dir {self.output_dir.text()}" if self.output_dir.text() else "",
-            f"--output_name {self.output_name.text()}" if self.output_name.text() else "",
-            f"--timestep_sampling {self.timestep_sampling.currentText()}",
-            f"--model_prediction_type {self.model_prediction_type.currentText()}",
-            f"--guidance_scale 1.0",
-            f"--loss_type {self.loss_type.currentText()}",
-            "--split_mode" if self.split_mode.isChecked() else ""
-        ]
-        
-        # Adiciona optimizer args se houver
-        optimizer_args = self.optimizer_args.text().strip()
-        if optimizer_args:
-            # Cada argumento precisa ser passado individualmente
-            cmd.append('--optimizer_args')
-            for arg in optimizer_args.split():
-                cmd.append(arg)
-
-        # Adiciona network args se houver
-        network_args = self.network_args.text().strip()
-        if network_args:
-            # Cada argumento precisa ser passado individualmente
-            cmd.append('--network_args')
-            for arg in network_args.split():
-                cmd.append(arg)
-
-        # Adiciona opção de resume se marcado
-        if self.resume_checkbox.isChecked() and self.resume_path.text().strip():
-            resume_path = self.resume_path.text().strip()
-            cmd.append(f"--network_weights {resume_path}")
-
-        # Adiciona parâmetros adicionais se houver
-        additional_params = self.additional_params.text().strip()
-        if additional_params:
-            cmd.extend(additional_params.split())
-
-        filtered_cmd = filter(None, cmd)
-        # Converte os itens para string e filtra os vazios
-        cmd_str = " ".join(str(item) for item in filtered_cmd if str(item).strip())
-        return cmd_str
+    def save_current_config(self):
+        """Salva a configuração atual no arquivo JSON"""
+        save_config(self.get_config())
