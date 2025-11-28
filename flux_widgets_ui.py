@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QHBoxLayout, QGroupBox, QFormLayout, QLineEdit, 
                            QPushButton, QCheckBox, QFileDialog, QLabel, QComboBox,
-                           QVBoxLayout)  # Adicionado QVBoxLayout que estava faltando
+                           QVBoxLayout, QWidget)
 from PyQt6.QtCore import Qt
 from pathlib import Path
 from flux_widgets_base import FluxTrainingWidgetsBase, NoWheelSpinBox, save_config
@@ -13,6 +13,8 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
     def init_ui(self):
         layout = self.control_layout
         layout.setSpacing(10)
+
+        # --- Essential Settings ---
 
         # Base Models
         model_group = QGroupBox("Base Models")
@@ -69,152 +71,6 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
 
-        # Scripts directory
-        scripts_group = QGroupBox("Scripts Directory")
-        scripts_layout = QHBoxLayout()
-        self.scripts_dir = QLineEdit()
-        self.scripts_dir.setPlaceholderText("Path to sd_scripts folder")
-        self.scripts_dir.setText(self.config.get("scripts_dir", ""))
-        select_scripts = QPushButton("Browse")
-        select_scripts.clicked.connect(self.select_scripts_path)
-        scripts_layout.addWidget(self.scripts_dir)
-        scripts_layout.addWidget(select_scripts)
-        scripts_group.setLayout(scripts_layout)
-        layout.addWidget(scripts_group)
-
-        # Resume Training
-        resume_group = QGroupBox("Resume Training")
-        resume_layout = QFormLayout()
-        
-        self.resume_checkbox = QCheckBox("Resume from checkpoint")
-        self.resume_path = QLineEdit()
-        self.resume_path.setEnabled(False)
-        self.resume_path.setPlaceholderText("Path to network weights file (.safetensors or .pt)")
-        select_resume = QPushButton("Browse")
-        select_resume.setEnabled(False)
-        
-        resume_path_layout = QHBoxLayout()
-        resume_path_layout.addWidget(self.resume_path)
-        resume_path_layout.addWidget(select_resume)
-        
-        resume_layout.addRow(self.resume_checkbox)
-        resume_layout.addRow("Checkpoint:", resume_path_layout)
-        
-        self.resume_checkbox.stateChanged.connect(lambda state: [
-            self.resume_path.setEnabled(state == Qt.CheckState.Checked.value),
-            select_resume.setEnabled(state == Qt.CheckState.Checked.value)
-        ])
-        select_resume.clicked.connect(self.select_resume_path)
-        
-        resume_group.setLayout(resume_layout)
-        layout.addWidget(resume_group)
-
-        # Flux Parameters
-        flux_group = QGroupBox("Flux Parameters")
-        flux_layout = QFormLayout()
-        
-        self.guidance_scale = NoWheelSpinBox()
-        self.guidance_scale.setRange(1, 20)
-        self.guidance_scale.setValue(self.config.get("guidance_scale", 1))
-        flux_layout.addRow("Guidance Scale:", self.guidance_scale)
-        
-        self.discrete_flow_shift = QCheckBox()
-        self.discrete_flow_shift.setChecked(self.config.get("discrete_flow_shift", False))
-        flux_layout.addRow("Discrete Flow Shift:", self.discrete_flow_shift)
-        
-        self.apply_t5_attn_mask = QCheckBox()
-        self.apply_t5_attn_mask.setChecked(self.config.get("apply_t5_attn_mask", False))
-        flux_layout.addRow("Apply T5 Attention Mask:", self.apply_t5_attn_mask)
-
-        self.t5xxl_max_token_length = NoWheelSpinBox()
-        self.t5xxl_max_token_length.setRange(64, 1024)
-        self.t5xxl_max_token_length.setValue(self.config.get("t5xxl_max_token_length", 256))
-        flux_layout.addRow("T5XXL Max Token Length:", self.t5xxl_max_token_length)
-        
-        flux_group.setLayout(flux_layout)
-        layout.addWidget(flux_group)
-
-        # Memory Optimization
-        memory_group = QGroupBox("Memory Optimization")
-        memory_layout = QFormLayout()
-        
-        self.blocks_to_swap = NoWheelSpinBox()
-        self.blocks_to_swap.setRange(0, 32)
-        self.blocks_to_swap.setValue(self.config.get("blocks_to_swap", 0))
-        memory_layout.addRow("Blocks to Swap:", self.blocks_to_swap)
-        
-        self.blockwise_fused_optimizers = QCheckBox()
-        self.blockwise_fused_optimizers.setChecked(self.config.get("blockwise_fused_optimizers", False))
-        memory_layout.addRow("Blockwise Fused Optimizers:", self.blockwise_fused_optimizers)
-        
-        self.cpu_offload = QCheckBox()
-        self.cpu_offload.setChecked(self.config.get("cpu_offload", False))
-        memory_layout.addRow("CPU Offload Checkpointing:", self.cpu_offload)
-        
-        memory_group.setLayout(memory_layout)
-        layout.addWidget(memory_group)
-
-        # Cache and Optimization
-        cache_group = QGroupBox("Cache and Optimization")
-        cache_layout = QFormLayout()
-
-        self.cache_latents = QCheckBox()
-        self.cache_latents.setChecked(self.config.get("cache_latents", True))
-        cache_layout.addRow("Cache Latents to Disk:", self.cache_latents)
-
-        self.cache_text_encoder = QCheckBox()
-        self.cache_text_encoder.setChecked(self.config.get("cache_text_encoder", True))
-        cache_layout.addRow("Cache Text Encoder:", self.cache_text_encoder)
-
-        self.cache_text_encoder_disk = QCheckBox()
-        self.cache_text_encoder_disk.setChecked(self.config.get("cache_text_encoder_disk", True))
-        cache_layout.addRow("Cache Text Encoder to Disk:", self.cache_text_encoder_disk)
-
-        self.persistent_workers = QCheckBox()
-        self.persistent_workers.setChecked(self.config.get("persistent_workers", True))
-        cache_layout.addRow("Persistent Data Loader Workers:", self.persistent_workers)
-
-        self.max_workers = NoWheelSpinBox()
-        self.max_workers.setRange(1, 16)
-        self.max_workers.setValue(self.config.get("max_workers", 2))
-        cache_layout.addRow("Max Data Loader Workers:", self.max_workers)
-
-        self.sdpa = QCheckBox()
-        self.sdpa.setChecked(self.config.get("sdpa", True))
-        cache_layout.addRow("SDPA:", self.sdpa)
-
-        self.flip_aug = QCheckBox()
-        self.flip_aug.setChecked(self.config.get("flip_aug", False))
-        cache_layout.addRow("Flip Augmentation:", self.flip_aug)
-
-        self.save_model_as = QComboBox()
-        self.save_model_as.addItems(["safetensors", "pt", "ckpt"])
-        self.save_model_as.setCurrentText(self.config.get("save_model_as", "safetensors"))
-        cache_layout.addRow("Save Model As:", self.save_model_as)
-
-        cache_group.setLayout(cache_layout)
-        layout.addWidget(cache_group)
-
-        # Network Configuration
-        network_group = QGroupBox("Network Configuration")
-        network_layout = QFormLayout()
-
-        self.network_dim = NoWheelSpinBox()
-        self.network_dim.setRange(1, 128)
-        self.network_dim.setValue(self.config.get("network_dim", 32))
-        network_layout.addRow("Network Dimension:", self.network_dim)
-
-        self.network_alpha = NoWheelSpinBox()
-        self.network_alpha.setRange(1, 128)
-        self.network_alpha.setValue(self.config.get("network_alpha", 16))
-        network_layout.addRow("Network Alpha:", self.network_alpha)
-
-        self.network_args = QLineEdit(self.config.get("network_args", "train_blocks=single"))
-        network_layout.addRow("Network Arguments:", self.network_args)
-
-        network_group.setLayout(network_layout)
-        layout.addWidget(network_group)
-
         # Output Configuration
         output_group = QGroupBox("Output Configuration")
         output_layout = QVBoxLayout()
@@ -241,6 +97,26 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
 
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
+
+        # Network Configuration
+        network_group = QGroupBox("Network Configuration")
+        network_layout = QFormLayout()
+
+        self.network_dim = NoWheelSpinBox()
+        self.network_dim.setRange(1, 128)
+        self.network_dim.setValue(self.config.get("network_dim", 32))
+        network_layout.addRow("Network Dimension:", self.network_dim)
+
+        self.network_alpha = NoWheelSpinBox()
+        self.network_alpha.setRange(1, 128)
+        self.network_alpha.setValue(self.config.get("network_alpha", 16))
+        network_layout.addRow("Network Alpha:", self.network_alpha)
+
+        self.network_args = QLineEdit(self.config.get("network_args", "train_blocks=single"))
+        network_layout.addRow("Network Arguments:", self.network_args)
+
+        network_group.setLayout(network_layout)
+        layout.addWidget(network_group)
 
         # Training Parameters
         training_group = QGroupBox("Training Parameters")
@@ -318,6 +194,142 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
         training_group.setLayout(training_layout)
         layout.addWidget(training_group)
 
+        # --- Advanced Settings Toggle ---
+        self.advanced_toggle = QCheckBox("Show Advanced Options")
+        self.advanced_toggle.setStyleSheet("font-weight: bold; color: #007acc; margin-top: 10px;")
+        layout.addWidget(self.advanced_toggle)
+
+        # --- Advanced Settings Container ---
+        self.advanced_container = QWidget()
+        self.advanced_layout = QVBoxLayout(self.advanced_container)
+        self.advanced_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Scripts directory
+        scripts_group = QGroupBox("Scripts Directory")
+        scripts_layout = QHBoxLayout()
+        self.scripts_dir = QLineEdit()
+        self.scripts_dir.setPlaceholderText("Path to sd_scripts folder")
+        self.scripts_dir.setText(self.config.get("scripts_dir", ""))
+        select_scripts = QPushButton("Browse")
+        select_scripts.clicked.connect(self.select_scripts_path)
+        scripts_layout.addWidget(self.scripts_dir)
+        scripts_layout.addWidget(select_scripts)
+        scripts_group.setLayout(scripts_layout)
+        self.advanced_layout.addWidget(scripts_group)
+
+        # Resume Training
+        resume_group = QGroupBox("Resume Training")
+        resume_layout = QFormLayout()
+        
+        self.resume_checkbox = QCheckBox("Resume from checkpoint")
+        self.resume_path = QLineEdit()
+        self.resume_path.setEnabled(False)
+        self.resume_path.setPlaceholderText("Path to network weights file (.safetensors or .pt)")
+        select_resume = QPushButton("Browse")
+        select_resume.setEnabled(False)
+        
+        resume_path_layout = QHBoxLayout()
+        resume_path_layout.addWidget(self.resume_path)
+        resume_path_layout.addWidget(select_resume)
+        
+        resume_layout.addRow(self.resume_checkbox)
+        resume_layout.addRow("Checkpoint:", resume_path_layout)
+        
+        self.resume_checkbox.stateChanged.connect(lambda state: [
+            self.resume_path.setEnabled(state == Qt.CheckState.Checked.value),
+            select_resume.setEnabled(state == Qt.CheckState.Checked.value)
+        ])
+        select_resume.clicked.connect(self.select_resume_path)
+        
+        resume_group.setLayout(resume_layout)
+        self.advanced_layout.addWidget(resume_group)
+
+        # Flux Parameters
+        flux_group = QGroupBox("Flux Parameters")
+        flux_layout = QFormLayout()
+        
+        self.guidance_scale = NoWheelSpinBox()
+        self.guidance_scale.setRange(1, 20)
+        self.guidance_scale.setValue(self.config.get("guidance_scale", 1))
+        flux_layout.addRow("Guidance Scale:", self.guidance_scale)
+        
+        self.discrete_flow_shift = QCheckBox()
+        self.discrete_flow_shift.setChecked(self.config.get("discrete_flow_shift", False))
+        flux_layout.addRow("Discrete Flow Shift:", self.discrete_flow_shift)
+        
+        self.apply_t5_attn_mask = QCheckBox()
+        self.apply_t5_attn_mask.setChecked(self.config.get("apply_t5_attn_mask", False))
+        flux_layout.addRow("Apply T5 Attention Mask:", self.apply_t5_attn_mask)
+
+        self.t5xxl_max_token_length = NoWheelSpinBox()
+        self.t5xxl_max_token_length.setRange(64, 1024)
+        self.t5xxl_max_token_length.setValue(self.config.get("t5xxl_max_token_length", 256))
+        flux_layout.addRow("T5XXL Max Token Length:", self.t5xxl_max_token_length)
+        
+        flux_group.setLayout(flux_layout)
+        self.advanced_layout.addWidget(flux_group)
+
+        # Memory Optimization
+        memory_group = QGroupBox("Memory Optimization")
+        memory_layout = QFormLayout()
+        
+        self.blocks_to_swap = NoWheelSpinBox()
+        self.blocks_to_swap.setRange(0, 32)
+        self.blocks_to_swap.setValue(self.config.get("blocks_to_swap", 0))
+        memory_layout.addRow("Blocks to Swap:", self.blocks_to_swap)
+        
+        self.blockwise_fused_optimizers = QCheckBox()
+        self.blockwise_fused_optimizers.setChecked(self.config.get("blockwise_fused_optimizers", False))
+        memory_layout.addRow("Blockwise Fused Optimizers:", self.blockwise_fused_optimizers)
+        
+        self.cpu_offload = QCheckBox()
+        self.cpu_offload.setChecked(self.config.get("cpu_offload", False))
+        memory_layout.addRow("CPU Offload Checkpointing:", self.cpu_offload)
+        
+        memory_group.setLayout(memory_layout)
+        self.advanced_layout.addWidget(memory_group)
+
+        # Cache and Optimization
+        cache_group = QGroupBox("Cache and Optimization")
+        cache_layout = QFormLayout()
+
+        self.cache_latents = QCheckBox()
+        self.cache_latents.setChecked(self.config.get("cache_latents", True))
+        cache_layout.addRow("Cache Latents to Disk:", self.cache_latents)
+
+        self.cache_text_encoder = QCheckBox()
+        self.cache_text_encoder.setChecked(self.config.get("cache_text_encoder", True))
+        cache_layout.addRow("Cache Text Encoder:", self.cache_text_encoder)
+
+        self.cache_text_encoder_disk = QCheckBox()
+        self.cache_text_encoder_disk.setChecked(self.config.get("cache_text_encoder_disk", True))
+        cache_layout.addRow("Cache Text Encoder to Disk:", self.cache_text_encoder_disk)
+
+        self.persistent_workers = QCheckBox()
+        self.persistent_workers.setChecked(self.config.get("persistent_workers", True))
+        cache_layout.addRow("Persistent Data Loader Workers:", self.persistent_workers)
+
+        self.max_workers = NoWheelSpinBox()
+        self.max_workers.setRange(1, 16)
+        self.max_workers.setValue(self.config.get("max_workers", 2))
+        cache_layout.addRow("Max Data Loader Workers:", self.max_workers)
+
+        self.sdpa = QCheckBox()
+        self.sdpa.setChecked(self.config.get("sdpa", True))
+        cache_layout.addRow("SDPA:", self.sdpa)
+
+        self.flip_aug = QCheckBox()
+        self.flip_aug.setChecked(self.config.get("flip_aug", False))
+        cache_layout.addRow("Flip Augmentation:", self.flip_aug)
+
+        self.save_model_as = QComboBox()
+        self.save_model_as.addItems(["safetensors", "pt", "ckpt"])
+        self.save_model_as.setCurrentText(self.config.get("save_model_as", "safetensors"))
+        cache_layout.addRow("Save Model As:", self.save_model_as)
+
+        cache_group.setLayout(cache_layout)
+        self.advanced_layout.addWidget(cache_group)
+
         # Additional Parameters
         params_group = QGroupBox("Additional Parameters")
         params_layout = QVBoxLayout()
@@ -328,10 +340,20 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
         
         params_layout.addWidget(self.additional_params)
         params_group.setLayout(params_layout)
-        layout.addWidget(params_group)
+        self.advanced_layout.addWidget(params_group)
+
+        # Add Advanced Container to Main Layout
+        layout.addWidget(self.advanced_container)
+        
+        # Connect Toggle
+        self.advanced_container.setVisible(False)
+        self.advanced_toggle.toggled.connect(self.advanced_container.setVisible)
 
         # Start Training button
         self.train_button = QPushButton("Start Training")
+        self.train_button.setObjectName("primaryButton")
+        self.train_button.setMinimumHeight(50)
+        self.train_button.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(self.train_button)
 
     def select_flux_path(self):
@@ -424,7 +446,11 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
 
     def get_command(self, dataset_path):
         """Gera o comando de treinamento para o Flux"""
-        dataset_config = dataset_path / "cropped_images/dataset.toml"
+        # Check if dataset_path is already the artifact folder (has dataset.toml)
+        if (dataset_path / "dataset.toml").exists():
+            dataset_config = dataset_path / "dataset.toml"
+        else:
+            dataset_config = dataset_path / "cropped_images/dataset.toml"
 
         original_script_path = Path(self.scripts_dir.text()) / "flux_train_network.py"
         script_path = self.script_manager.create_temp_script(original_script_path)

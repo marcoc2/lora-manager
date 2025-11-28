@@ -31,13 +31,87 @@ class MainController(QObject):
         self.view.generate_toml_clicked.connect(self.generate_all_toml)
         self.view.rename_and_convert_images_clicked.connect(self.rename_and_convert_images)
         self.view.analyze_dataset_clicked.connect(self.analyze_dataset)
+        self.view.artifact_selected.connect(self.load_artifact_info)
 
     def select_dataset_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, "Select Dataset Folder")
         if folder:
             self.dataset_path = Path(folder).absolute()
-            self.view.populate_tree_view(self.dataset_path)
+            self.view.dataset_path = self.dataset_path # Update view
+            self.view.active_artifact_path = None # Reset artifact
+            self.view.populate_image_grid(self.dataset_path)
+            self.scan_artifacts()
             self.update_status()
+
+    def scan_artifacts(self):
+        """Scans for cropped_images folders and populates the combo box"""
+        if not self.dataset_path:
+            return
+            
+        self.view.dataset_view.artifact_combo.clear()
+        
+        # Find all folders containing "cropped_images"
+        artifacts = []
+        for item in self.dataset_path.iterdir():
+            if item.is_dir() and "cropped_images" in item.name:
+                artifacts.append(item.name)
+        
+        # Sort to have a consistent order
+        artifacts.sort()
+        
+        if artifacts:
+            self.view.dataset_view.artifact_combo.addItems(artifacts)
+            # Select the most likely "active" one (e.g., just "cropped_images" or the last created)
+            if "cropped_images" in artifacts:
+                self.view.dataset_view.artifact_combo.setCurrentText("cropped_images")
+            else:
+                self.view.dataset_view.artifact_combo.setCurrentIndex(0)
+
+    def load_artifact_info(self, folder_name):
+        """Loads and displays info from dataset.toml in the selected folder"""
+        if not self.dataset_path:
+            return
+            
+        artifact_path = self.dataset_path / folder_name
+        self.view.active_artifact_path = artifact_path # Update view
+        toml_path = artifact_path / "dataset.toml"
+        qwen_toml_path = artifact_path / "dataset_qwen.toml"
+        
+        # Update image grid to show images from this artifact
+        self.view.populate_image_grid(artifact_path)
+        
+        info_text = f"Artifact: {folder_name}\n"
+        
+        if toml_path.exists():
+            try:
+                data = toml.load(toml_path)
+                # Extract some key info
+                if "datasets" in data and len(data["datasets"]) > 0:
+                    res = data["datasets"][0].get("resolution", "Unknown")
+                    batch = data["datasets"][0].get("batch_size", "Unknown")
+                    info_text += f"SD-Scripts: Res={res}, Batch={batch}\n"
+            except Exception as e:
+                info_text += f"Error reading dataset.toml: {e}\n"
+        else:
+            info_text += "No dataset.toml found.\n"
+            
+        if qwen_toml_path.exists():
+             try:
+                data = toml.load(qwen_toml_path)
+                if "general" in data:
+                    res = data["general"].get("resolution", "Unknown")
+                    info_text += f"Musubi: Res={res}\n"
+             except Exception as e:
+                info_text += f"Error reading dataset_qwen.toml: {e}\n"
+        
+        # Count images
+        try:
+            n_images = len(list(artifact_path.glob("*.[jp][pn][g]")))
+            info_text += f"Images: {n_images}"
+        except:
+            pass
+            
+        self.view.dataset_view.toml_info.setText(info_text)
 
     def process_images(self, config):
         if not self.dataset_path:
@@ -46,7 +120,15 @@ class MainController(QObject):
             
         try:
             input_dir = self.dataset_path
-            output_dir = self.dataset_path / "cropped_images"
+            
+            # Smart folder naming based on resolution
+            width, height = config['target_size']
+            if width == height:
+                folder_name = f"cropped_images_{width}"
+            else:
+                folder_name = f"cropped_images_{width}x{height}"
+                
+            output_dir = self.dataset_path / folder_name
             
             n_files = sum(1 for _ in input_dir.glob("*.[jp][pn][g]"))
             if n_files == 0:
@@ -63,9 +145,11 @@ class MainController(QObject):
             )
             
             self.view.show_message("Success", 
-                f"Processing complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
+                f"Processing complete!\n\nOutput Folder: {folder_name}\nSuccessfully processed: {processed}\nFailed: {failed}")
             
-            self.view.populate_tree_view(self.dataset_path)
+            self.view.populate_image_grid(self.dataset_path)
+            self.scan_artifacts() # Refresh list
+            self.view.dataset_view.artifact_combo.setCurrentText(folder_name) # Auto-select new folder
             self.update_status()
             
         except Exception as e:

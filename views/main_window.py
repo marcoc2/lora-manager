@@ -1,13 +1,117 @@
 import sys
 from pathlib import Path
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QTreeView, QGroupBox, QPushButton, 
-                            QMessageBox, QLabel, QSpinBox,
-                            QFileDialog, QProgressDialog)
-from PyQt6.QtGui import QStandardItemModel, QStandardItem
+                            QHBoxLayout, QTabWidget, QMessageBox, QLabel, 
+                            QProgressDialog)
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from views.dataset_view import DatasetView
 from training_tabs import TrainingTabs
+from queue_manager import QueueManager
+
+DARK_STYLESHEET = """
+QMainWindow, QWidget {
+    background-color: #1e1e1e;
+    color: #ffffff;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 14px;
+}
+QGroupBox {
+    border: 1px solid #3e3e42;
+    border-radius: 6px;
+    margin-top: 24px;
+    padding-top: 10px;
+    font-weight: bold;
+    color: #e0e0e0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    left: 10px;
+    color: #007acc;
+}
+QPushButton {
+    background-color: #2d2d30;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+    padding: 6px 12px;
+    color: #ffffff;
+}
+QPushButton:hover {
+    background-color: #3e3e42;
+    border-color: #007acc;
+}
+QPushButton:pressed {
+    background-color: #007acc;
+}
+QPushButton#primaryButton {
+    background-color: #007acc;
+    font-weight: bold;
+}
+QPushButton#primaryButton:hover {
+    background-color: #0098ff;
+}
+QPushButton#actionButton {
+    background-color: #2d2d30;
+    border: 1px solid #007acc;
+    color: #007acc;
+}
+QPushButton#actionButton:hover {
+    background-color: #007acc;
+    color: #ffffff;
+}
+QLineEdit, QSpinBox, QComboBox {
+    background-color: #252526;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+    padding: 4px;
+    color: #ffffff;
+}
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+    border-color: #007acc;
+}
+QTabWidget::pane {
+    border: 1px solid #3e3e42;
+    background-color: #1e1e1e;
+}
+QTabBar::tab {
+    background-color: #2d2d30;
+    color: #ffffff;
+    padding: 8px 16px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected {
+    background-color: #1e1e1e;
+    border-bottom: 2px solid #007acc;
+    font-weight: bold;
+}
+QTreeView {
+    background-color: #252526;
+    border: 1px solid #3e3e42;
+    color: #ffffff;
+}
+QHeaderView::section {
+    background-color: #2d2d30;
+    color: #ffffff;
+    padding: 4px;
+    border: none;
+}
+QScrollBar:vertical {
+    background-color: #1e1e1e;
+    width: 12px;
+}
+QScrollBar::handle:vertical {
+    background-color: #424242;
+    border-radius: 6px;
+    min-height: 20px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #686868;
+}
+"""
 
 class DatasetManagerGUI(QMainWindow):
     # Signals
@@ -17,181 +121,110 @@ class DatasetManagerGUI(QMainWindow):
     generate_toml_clicked = pyqtSignal()
     rename_and_convert_images_clicked = pyqtSignal()
     analyze_dataset_clicked = pyqtSignal()
+    artifact_selected = pyqtSignal(str) # New signal
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dataset Manager")
-        self.setGeometry(100, 100, 1300, 900)
+        self.setWindowTitle("Dataset Manager Pro")
+        self.setGeometry(100, 100, 1400, 900)
+        
+        # Apply Dark Theme
+        self.setStyleSheet(DARK_STYLESHEET)
+        
+        self.dataset_path = None
+        self.active_artifact_path = None
         
         self.init_ui()
 
+    def get_effective_dataset_path(self):
+        """Returns the active artifact path if selected, otherwise the root dataset path"""
+        if self.active_artifact_path:
+            return self.active_artifact_path
+        return self.dataset_path
+
     def init_ui(self):
-        # Widget central
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Layout principal
-        layout = QHBoxLayout()
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Painel esquerdo - TreeView e seleção de pasta
-        left_panel = QWidget()
-        left_layout = QVBoxLayout()
+        # Main Tab Widget
+        self.tabs = QTabWidget()
         
-        # Botão para selecionar pasta
-        self.select_button = QPushButton("Select Dataset Folder")
-        left_layout.addWidget(self.select_button)
+        # 1. Dataset View
+        self.dataset_view = DatasetView(self)
+        self.tabs.addTab(self.dataset_view, "1. Dataset Preparation")
         
-        # TreeView para visualização do dataset
-        self.tree_view = QTreeView()
-        self.tree_model = QStandardItemModel()
-        self.tree_model.setHorizontalHeaderLabels(['Dataset Structure'])
-        self.tree_view.setModel(self.tree_model)
-        self.tree_view.setColumnWidth(0, 500)
-        left_layout.addWidget(self.tree_view)
+        # Create Queue Manager (needed for Training View)
+        self.queue_manager = QueueManager()
         
-        left_panel.setLayout(left_layout)
+        # 2. Training View
+        self.training_tabs = TrainingTabs(self, queue_manager=self.queue_manager)
+        self.tabs.addTab(self.training_tabs, "2. Training")
         
-        # Painel central - Configurações e processamento
-        center_panel = QWidget()
-        center_layout = QVBoxLayout()
-        center_layout.setSpacing(10)
+        # 3. Queue & Monitor View
+        self.tabs.addTab(self.queue_manager, "3. Queue & Monitor")
         
-        # 1. Grupo de Processamento de Imagens
-        image_group = QGroupBox("1. Image Processing")
-        image_group.setMinimumHeight(150)
-        image_layout = QVBoxLayout()
+        main_layout.addWidget(self.tabs)
         
-        size_layout = QHBoxLayout()
-        size_layout.addWidget(QLabel("Target Size:"))
-        self.crop_width = QSpinBox()
-        self.crop_width.setRange(64, 2048)
-        self.crop_width.setValue(512)
-        self.crop_height = QSpinBox()
-        self.crop_height.setRange(64, 2048)
-        self.crop_height.setValue(512)
-        size_layout.addWidget(self.crop_width)
-        size_layout.addWidget(QLabel("x"))
-        size_layout.addWidget(self.crop_height)
-        image_layout.addLayout(size_layout)
-        
-        self.face_detection = QPushButton("Face Detection: ON")
-        self.face_detection.setCheckable(True)
-        self.face_detection.setChecked(True)
-        image_layout.addWidget(self.face_detection)
-        
-        self.process_button = QPushButton("Process Images")
-        image_layout.addWidget(self.process_button)
-        
-        image_group.setLayout(image_layout)
-        center_layout.addWidget(image_group)
-        
-        # 2. Grupo de Geração de Captions
-        caption_group = QGroupBox("2. Caption Generation")
-        caption_group.setMinimumHeight(100)
-        caption_layout = QVBoxLayout()
-        caption_layout.setContentsMargins(10, 15, 10, 15)
-        
-        self.generate_captions_btn = QPushButton("Generate Captions")
-        caption_layout.addWidget(self.generate_captions_btn)
-        
-        caption_group.setLayout(caption_layout)
-        center_layout.addWidget(caption_group)
-        
-        # 3. Grupo de Configuração do Dataset
-        dataset_group = QGroupBox("3. Dataset Configuration")
-        dataset_group.setMinimumHeight(100)
-        dataset_layout = QVBoxLayout()
-        dataset_layout.setContentsMargins(10, 15, 10, 15)
-        
-        self.generate_toml_btn = QPushButton("Generate dataset.toml files")
-        dataset_layout.addWidget(self.generate_toml_btn)
-        
-        dataset_group.setLayout(dataset_layout)
-        center_layout.addWidget(dataset_group)
-        
-        # 4. Grupo de Utilitários
-        utils_group = QGroupBox("Utilities")
-        utils_group.setMinimumHeight(120)
-        utils_layout = QVBoxLayout()
-        utils_layout.setContentsMargins(10, 15, 10, 15)
-        utils_layout.setSpacing(8)
-        
-        self.rename_convert_btn = QPushButton("Rename and Convert Images")
-        utils_layout.addWidget(self.rename_convert_btn)
-        
-        self.analyze_btn = QPushButton("Analyze Dataset")
-        utils_layout.addWidget(self.analyze_btn)
-        
-        utils_group.setLayout(utils_layout)
-        center_layout.addWidget(utils_group)
-        
-        # Status
-        status_group = QGroupBox("Status")
-        status_layout = QVBoxLayout()
-        self.status_label = QLabel("No dataset selected")
+        # Global Status Bar
+        self.status_bar = QWidget()
+        self.status_bar.setStyleSheet("background-color: #007acc; color: white;")
+        self.status_bar.setFixedHeight(30)
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(10, 0, 10, 0)
+        self.status_label = QLabel("Ready")
         status_layout.addWidget(self.status_label)
-        status_group.setLayout(status_layout)
-        center_layout.addWidget(status_group)
+        self.status_bar.setLayout(status_layout)
         
-        center_panel.setLayout(center_layout)
+        main_layout.addWidget(self.status_bar)
         
-        # Painel direito - Widgets de treinamento
-        self.training_tabs = TrainingTabs(self)
-        
-        layout.addWidget(left_panel, 25)
-        layout.addWidget(center_panel, 10)
-        layout.addWidget(self.training_tabs, 65)
-        
-        central_widget.setLayout(layout)
+        central_widget.setLayout(main_layout)
 
-        # Connect signals
-        self.select_button.clicked.connect(self.select_dataset_folder_clicked.emit)
-        self.process_button.clicked.connect(self.on_process_images_clicked)
-        self.generate_captions_btn.clicked.connect(self.generate_captions_clicked.emit)
-        self.generate_toml_btn.clicked.connect(self.generate_toml_clicked.emit)
-        self.rename_convert_btn.clicked.connect(self.rename_and_convert_images_clicked.emit)
-        self.analyze_btn.clicked.connect(self.analyze_dataset_clicked.emit)
-        self.face_detection.clicked.connect(self.toggle_face_detection)
+    # Proxy methods for DatasetView actions
+    def select_dataset_folder(self):
+        self.select_dataset_folder_clicked.emit()
 
-    def on_process_images_clicked(self):
+    def on_artifact_selected(self, index):
+        folder_name = self.dataset_view.artifact_combo.currentText()
+        if folder_name:
+            self.artifact_selected.emit(folder_name)
+
+    def process_images(self):
         config = {
-            'target_size': (self.crop_width.value(), self.crop_height.value()),
-            'use_face_detection': self.face_detection.isChecked()
+            'target_size': (self.dataset_view.crop_width.value(), self.dataset_view.crop_height.value()),
+            'use_face_detection': self.dataset_view.face_detection.isChecked()
         }
         self.process_images_clicked.emit(config)
 
     def toggle_face_detection(self):
-        if self.face_detection.isChecked():
-            self.face_detection.setText("Face Detection: ON")
+        if self.dataset_view.face_detection.isChecked():
+            self.dataset_view.face_detection.setText("Face Detection: ON")
         else:
-            self.face_detection.setText("Face Detection: OFF")
+            self.dataset_view.face_detection.setText("Face Detection: OFF")
 
-    def populate_tree_view(self, path):
-        self.tree_model.clear()
-        self.tree_model.setHorizontalHeaderLabels(['Dataset Structure'])
-        
-        root_item = QStandardItem(str(path))
-        self.tree_model.appendRow(root_item)
-        
-        def add_directory_contents(parent_item, dir_path):
-            try:
-                for item_path in sorted(Path(dir_path).iterdir()):
-                    item = QStandardItem(item_path.name)
-                    parent_item.appendRow(item)
-                    
-                    if item_path.is_dir():
-                        add_directory_contents(item, item_path)
-            except Exception as e:
-                print(f"Erro ao acessar {dir_path}: {e}")
-        
-        add_directory_contents(root_item, path)
-        self.tree_view.expandAll()
+    def generate_captions(self):
+        self.generate_captions_clicked.emit()
+
+    def generate_toml(self):
+        self.generate_toml_clicked.emit()
+
+    def rename_and_convert_images(self):
+        self.rename_and_convert_images_clicked.emit()
+
+    def analyze_dataset(self):
+        self.analyze_dataset_clicked.emit()
+
+    # Methods called by MainController
+    def populate_image_grid(self, path):
+        self.dataset_view.populate_image_grid(path)
 
     def update_status(self, status_text):
         self.status_label.setText(status_text)
 
     def show_message(self, title, message, detailed_text=None):
-        msg = QMessageBox()
+        msg = QMessageBox(self)
         msg.setWindowTitle(title)
         msg.setText(message)
         if detailed_text:

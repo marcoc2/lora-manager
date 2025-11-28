@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QHBoxLayout, QGroupBox, QFormLayout, QLineEdit, 
                            QPushButton, QCheckBox, QFileDialog, QLabel, QComboBox,
-                           QVBoxLayout, QSpinBox, QMessageBox)
+                           QVBoxLayout, QSpinBox, QMessageBox, QWidget)
 from PyQt6.QtCore import Qt
 from pathlib import Path
 from qwen_widgets_base import QwenTrainingWidgetsBase, NoWheelSpinBox, save_config
@@ -16,6 +16,8 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
     def init_ui(self):
         layout = self.control_layout
         layout.setSpacing(10)
+
+        # --- Essential Settings ---
 
         # Base Models
         model_group = QGroupBox("Base Models")
@@ -60,37 +62,6 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
 
-        # Python/Venv Path (NOVO)
-        python_group = QGroupBox("Python Environment")
-        python_layout = QVBoxLayout()
-        
-        # Python path
-        python_path_layout = QHBoxLayout()
-        self.python_venv_path = QLineEdit()
-        self.python_venv_path.setPlaceholderText("Path to python.exe with Musubi installed (e.g., C:/Apps/musubi_env/Scripts/python.exe)")
-        self.python_venv_path.setText(self.config.get("python_venv_path", ""))
-        select_python = QPushButton("Browse")
-        select_python.clicked.connect(self.select_python_path)
-        python_path_layout.addWidget(self.python_venv_path)
-        python_path_layout.addWidget(select_python)
-        python_layout.addWidget(QLabel("Python/Venv Path:"))
-        python_layout.addLayout(python_path_layout)
-        
-        # Musubi directory
-        musubi_layout = QHBoxLayout()
-        self.musubi_dir = QLineEdit()
-        self.musubi_dir.setPlaceholderText("Path to musubi-tuner folder")
-        self.musubi_dir.setText(self.config.get("musubi_dir", ""))
-        select_musubi = QPushButton("Browse")
-        select_musubi.clicked.connect(self.select_musubi_path)
-        musubi_layout.addWidget(self.musubi_dir)
-        musubi_layout.addWidget(select_musubi)
-        python_layout.addWidget(QLabel("Musubi Directory:"))
-        python_layout.addLayout(musubi_layout)
-        
-        python_group.setLayout(python_layout)
-        layout.addWidget(python_group)
-
         # Output Configuration
         output_group = QGroupBox("Output Configuration")
         output_layout = QFormLayout()
@@ -114,7 +85,7 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
 
-        # Training Parameters
+        # Training Parameters (Essential)
         params_group = QGroupBox("Training Parameters")
         params_layout = QFormLayout()
         
@@ -153,19 +124,49 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         self.batch_size.setValue(self.config.get("batch_size", 1))
         params_layout.addRow("Batch Size:", self.batch_size)
         
-        # Discrete flow shift
-        self.discrete_flow_shift = QLineEdit()
-        self.discrete_flow_shift.setText(str(self.config.get("discrete_flow_shift", 2.0)))
-        params_layout.addRow("Discrete Flow Shift:", self.discrete_flow_shift)
-        
-        # Blocks to swap (para economia de VRAM)
-        self.blocks_to_swap = NoWheelSpinBox()
-        self.blocks_to_swap.setRange(0, 50)
-        self.blocks_to_swap.setValue(self.config.get("blocks_to_swap", 0))
-        params_layout.addRow("Blocks to Swap (VRAM saving):", self.blocks_to_swap)
-        
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
+
+        # --- Advanced Settings Toggle ---
+        self.advanced_toggle = QCheckBox("Show Advanced Options")
+        self.advanced_toggle.setStyleSheet("font-weight: bold; color: #007acc; margin-top: 10px;")
+        layout.addWidget(self.advanced_toggle)
+
+        # --- Advanced Settings Container ---
+        self.advanced_container = QWidget()
+        self.advanced_layout = QVBoxLayout(self.advanced_container)
+        self.advanced_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Python/Venv Path
+        python_group = QGroupBox("Python Environment")
+        python_layout = QVBoxLayout()
+        
+        # Python path
+        python_path_layout = QHBoxLayout()
+        self.python_venv_path = QLineEdit()
+        self.python_venv_path.setPlaceholderText("Path to python.exe with Musubi installed (e.g., C:/Apps/musubi_env/Scripts/python.exe)")
+        self.python_venv_path.setText(self.config.get("python_venv_path", ""))
+        select_python = QPushButton("Browse")
+        select_python.clicked.connect(self.select_python_path)
+        python_path_layout.addWidget(self.python_venv_path)
+        python_path_layout.addWidget(select_python)
+        python_layout.addWidget(QLabel("Python/Venv Path:"))
+        python_layout.addLayout(python_path_layout)
+        
+        # Musubi directory
+        musubi_layout = QHBoxLayout()
+        self.musubi_dir = QLineEdit()
+        self.musubi_dir.setPlaceholderText("Path to musubi-tuner folder")
+        self.musubi_dir.setText(self.config.get("musubi_dir", ""))
+        select_musubi = QPushButton("Browse")
+        select_musubi.clicked.connect(self.select_musubi_path)
+        musubi_layout.addWidget(self.musubi_dir)
+        musubi_layout.addWidget(select_musubi)
+        python_layout.addWidget(QLabel("Musubi Directory:"))
+        python_layout.addLayout(musubi_layout)
+        
+        python_group.setLayout(python_layout)
+        self.advanced_layout.addWidget(python_group)
 
         # Advanced Options
         advanced_group = QGroupBox("Advanced Options")
@@ -194,9 +195,20 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         self.weighting_scheme.addItems(["none", "sigma_sqrt"])
         self.weighting_scheme.setCurrentText(self.config.get("weighting_scheme", "none"))
         advanced_layout.addRow("Weighting Scheme:", self.weighting_scheme)
+
+        # Discrete flow shift
+        self.discrete_flow_shift = QLineEdit()
+        self.discrete_flow_shift.setText(str(self.config.get("discrete_flow_shift", 2.0)))
+        advanced_layout.addRow("Discrete Flow Shift:", self.discrete_flow_shift)
+        
+        # Blocks to swap (para economia de VRAM)
+        self.blocks_to_swap = NoWheelSpinBox()
+        self.blocks_to_swap.setRange(0, 50)
+        self.blocks_to_swap.setValue(self.config.get("blocks_to_swap", 0))
+        advanced_layout.addRow("Blocks to Swap (VRAM saving):", self.blocks_to_swap)
         
         advanced_group.setLayout(advanced_layout)
-        layout.addWidget(advanced_group)
+        self.advanced_layout.addWidget(advanced_group)
 
         # Checkboxes for various options
         options_group = QGroupBox("Training Options")
@@ -227,7 +239,7 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         options_layout.addWidget(self.flip_aug)
         
         options_group.setLayout(options_layout)
-        layout.addWidget(options_group)
+        self.advanced_layout.addWidget(options_group)
 
         # Resume Training
         resume_group = QGroupBox("Resume Training")
@@ -255,7 +267,7 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         select_resume.clicked.connect(self.select_resume_path)
         
         resume_group.setLayout(resume_layout)
-        layout.addWidget(resume_group)
+        self.advanced_layout.addWidget(resume_group)
 
         # Cache and Convert buttons
         cache_group = QGroupBox("Cache and Convert")
@@ -274,11 +286,20 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
         cache_layout.addWidget(self.convert_lora_button)
         
         cache_group.setLayout(cache_layout)
-        layout.addWidget(cache_group)
+        self.advanced_layout.addWidget(cache_group)
+
+        # Add Advanced Container to Main Layout
+        layout.addWidget(self.advanced_container)
+        
+        # Connect Toggle
+        self.advanced_container.setVisible(False)
+        self.advanced_toggle.toggled.connect(self.advanced_container.setVisible)
 
         # Training button
         self.train_button = QPushButton("Start Training")
-        self.train_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 10px; }")
+        self.train_button.setObjectName("primaryButton")
+        self.train_button.setMinimumHeight(50)
+        self.train_button.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(self.train_button)
 
     def select_dit_path(self):
@@ -386,22 +407,6 @@ class QwenTrainingWidgets(QwenTrainingWidgetsBase):
             errors.append("Musubi Tuner directory is required")
         elif not Path(self.musubi_dir.text()).exists():
             errors.append("Musubi Tuner directory does not exist")
-        
-        if not self.output_dir.text():
-            errors.append("Output directory is required")
-            
-        return errors
-
-    def prepare_musubi_dataset(self, dataset_path):
-        """Prepara estrutura de dataset específica para Musubi (imagens + captions misturados)"""
-        import shutil
-        
-        cropped_dir = dataset_path / "cropped_images"
-        musubi_dir = dataset_path / "cropped_images_musubi"
-        captions_dir = cropped_dir / "captions"
-        
-        # Criar diretório musubi se não existir
-        musubi_dir.mkdir(exist_ok=True)
         
         # Criar cache_imgs dentro do musubi_dir
         musubi_cache_dir = musubi_dir / "cache_imgs"
