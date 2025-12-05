@@ -330,15 +330,7 @@ class TrainingController(QObject):
         # Validate inputs
         if not config.get("model_path"):
             return None, "Model path is required"
-
-        # Validate resume checkpoint if specified
-        if config.get("resume_training"):
-            resume_path = config.get("resume_path")
-            if not resume_path:
-                return None, "Resume training is enabled but no checkpoint selected"
-            if not Path(resume_path).exists():
-                return None, f"Resume checkpoint not found: {resume_path}"
-
+            
         # Update config with dataset_path and save it (as requested by user)
         try:
             config["dataset_path"] = str(dataset_path).replace("\\", "/")
@@ -357,41 +349,6 @@ class TrainingController(QObject):
         # Ensure name is stripped of extension
         name_no_ext = Path(config.get("output_name", "zimage_lora")).stem
 
-        # Build network config with resume support
-        network_config = {
-            "type": "lora",
-            "linear": config.get("rank", 16),
-            "linear_alpha": config.get("alpha", 16)
-        }
-
-        # Handle resume training (Dual Approach)
-        if config.get("resume_training") and config.get("resume_path"):
-            resume_path = Path(config.get("resume_path"))
-
-            # Approach 1: Add to YAML (may not work in all ai-toolkit versions)
-            network_config["resume_lora_path"] = str(resume_path.absolute()).replace("\\", "/")
-
-            # Approach 2: Copy checkpoint to expected location (guaranteed to work)
-            # ai-toolkit auto-resume will find the checkpoint
-            # Since we modified BaseTrainProcess to save directly to training_folder (no nested folder),
-            # we copy checkpoint directly to output_dir
-            job_name = name_no_ext
-
-            # Extract step from checkpoint source
-            import re
-            match = re.search(r'_(\d+)\.(safetensors|pt)$', resume_path.name)
-            if match:
-                step_num = match.group(1)
-                expected_name = f"{job_name}_{step_num}.safetensors"
-                expected_path = output_dir / expected_name
-
-                # Copy if not already in expected location
-                if expected_path != resume_path.absolute():
-                    import shutil
-                    shutil.copy2(resume_path, expected_path)
-                    print(f"Checkpoint copied to: {expected_path}")
-                    print(f"ai-toolkit will resume from step {step_num}")
-
         # Generate YAML config
         yaml_config = {
             "job": "extension",
@@ -401,7 +358,11 @@ class TrainingController(QObject):
                     "type": "sd_trainer",
                     "training_folder": str(output_dir.absolute()),
                     "device": "cuda:0",
-                    "network": network_config,
+                    "network": {
+                        "type": "lora",
+                        "linear": config.get("rank", 16),
+                        "linear_alpha": config.get("alpha", 16)
+                    },
                     "save": {
                         "dtype": "float16",
                         "save_every": config.get("save_every", 250),
@@ -431,9 +392,7 @@ class TrainingController(QObject):
                             "use_ema": False, # Disabled for VRAM optimization
                             "ema_decay": 0.99
                         },
-                        "dtype": "bf16",
-                        # Enable/disable sampling based on UI checkbox (inverted logic)
-                        "disable_sampling": not config.get("enable_sampling", True)
+                        "dtype": "bf16"
                     },
                     "model": {
                         "arch": "zimage",
@@ -447,13 +406,13 @@ class TrainingController(QObject):
                     },
                     "sample": {
                         "sampler": "flowmatch",
-                        "sample_every": config.get("sample_every", 250),
-                        "width": 1024,
-                        "height": 1024,
+                        "sample_every": config.get("save_every", 250),
+                        "width": config.get("resolution", 1024),
+                        "height": config.get("resolution", 1024),
                         "prompts": [p for p in config.get("sample_prompts", "").split("\n") if p.strip()],
                         "neg": "",
                         "seed": 42,
-                        "walk_seed": False,
+                        "walk_seed": True,
                         "guidance_scale": 1.0,
                         "sample_steps": 8
                     }
@@ -473,22 +432,13 @@ class TrainingController(QObject):
         # Build command
         # Assuming ai-toolkit is in reference/ai-toolkit
         # We need to run run.py from that directory
-        toolkit_path = Path("reference/ai-toolkit-original").absolute()
+        toolkit_path = Path("reference/ai-toolkit").absolute()
         
         # We need to run this in a python environment that has ai-toolkit dependencies
         # Using sys.executable ensures we use the same python that is running this app
         # which is likely the one where the user installed the requirements.
         
-        run_script = toolkit_path / "run.py"
-        
-        # Use the specific venv python
-        venv_python = Path("C:/Apps/sd-scripts/venv/Scripts/python.exe")
-        if venv_python.exists():
-            python_exe = str(venv_python)
-        else:
-            python_exe = sys.executable
-        
-        command = f'"{python_exe}" "{run_script}" "{yaml_path}"'
+        command = f'"{sys.executable}" {run_script} {yaml_path}'
         
         return command, None
 

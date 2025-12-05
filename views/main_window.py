@@ -155,16 +155,21 @@ class DatasetManagerGUI(QMainWindow):
         # 1. Dataset View
         self.dataset_view = DatasetView(self)
         self.tabs.addTab(self.dataset_view, "1. Dataset Preparation")
-        
+
+        # 2. Caption Processing
+        from views.caption_processing_view import CaptionProcessingView
+        self.caption_panel = CaptionProcessingView(self)
+        self.tabs.addTab(self.caption_panel, "2. Caption Processing")
+
         # Create Queue Manager (needed for Training View)
         self.queue_manager = QueueManager()
         
-        # 2. Training View
+        # 3. Training View
         self.training_tabs = TrainingTabs(self, queue_manager=self.queue_manager)
-        self.tabs.addTab(self.training_tabs, "2. Training")
+        self.tabs.addTab(self.training_tabs, "3. Training")
         
-        # 3. Queue & Monitor View
-        self.tabs.addTab(self.queue_manager, "3. Queue & Monitor")
+        # 4. Queue & Monitor View
+        self.tabs.addTab(self.queue_manager, "4. Queue & Monitor")
         
         main_layout.addWidget(self.tabs)
         

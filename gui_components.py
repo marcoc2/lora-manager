@@ -38,7 +38,7 @@ class CaptionConfigDialog(QDialog):
         
         # Method selection
         self.method_combo = QComboBox()
-        self.method_combo.addItems(["Florence-2", "Danbooru", "Janus-7B"])
+        self.method_combo.addItems(["Florence-2", "Danbooru", "Janus-7B", "Qwen3-VL"])
         layout.addRow("Captioning Method:", self.method_combo)
         
         # Prefix field

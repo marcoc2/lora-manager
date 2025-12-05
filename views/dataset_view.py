@@ -114,28 +114,8 @@ class DatasetView(QWidget):
         img_group.setLayout(img_layout)
         layout.addWidget(img_group)
         
-        # 2. Caption Generation
-        cap_group = QGroupBox("2. Caption Generation")
-        cap_layout = QVBoxLayout()
-        gen_cap_btn = QPushButton("Generate Captions")
-        gen_cap_btn.setObjectName("actionButton")
-        gen_cap_btn.clicked.connect(self.parent_window.generate_captions)
-        cap_layout.addWidget(gen_cap_btn)
-        cap_group.setLayout(cap_layout)
-        layout.addWidget(cap_group)
-        
-        # 3. Dataset Config
-        conf_group = QGroupBox("3. Dataset Configuration")
-        conf_layout = QVBoxLayout()
-        gen_toml_btn = QPushButton("Generate dataset.toml")
-        gen_toml_btn.setObjectName("actionButton")
-        gen_toml_btn.clicked.connect(self.parent_window.generate_toml)
-        conf_layout.addWidget(gen_toml_btn)
-        conf_group.setLayout(conf_layout)
-        layout.addWidget(conf_group)
-        
-        # 4. Utilities
-        util_group = QGroupBox("Utilities")
+        # 2. Utilities
+        util_group = QGroupBox("2. Utilities")
         util_layout = QVBoxLayout()
         
         rename_btn = QPushButton("Rename and Convert Images")
@@ -148,6 +128,8 @@ class DatasetView(QWidget):
         
         util_group.setLayout(util_layout)
         layout.addWidget(util_group)
+        
+
         
         layout.addStretch() # Push everything up
         panel.setLayout(layout)

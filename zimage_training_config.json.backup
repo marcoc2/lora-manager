@@ -1,0 +1,17 @@
+{
+    "model_path": "E:/flux_models/z_image_turbo_bf16.safetensors",
+    "adapter_path": "./models/zimage_turbo_training_adapter_v1.safetensors",
+    "text_encoder_path": "Tongyi-MAI/Z-Image-Turbo",
+    "tokenizer_path": "",
+    "steps": 2000,
+    "batch_size": 1,
+    "learning_rate": "1e-4",
+    "resolution": 512,
+    "rank": 32,
+    "alpha": 32,
+    "output_dir": "F:/AppsCrucial/ComfyUI_phoenix2/ComfyUI/models/loras/zimage/",
+    "output_name": "b0bb13_g00ds_zimage_1024",
+    "save_every": 240,
+    "sample_prompts": "b0bb13_g00ds Coloring book illustration with thick outlines.  The image depicts a cozy bakery scene with a variety of animals interacting within it. At the forefront, a dog wearing an apron is behind the counter, engaging with a cat who appears to be purchasing a gift box. The counter is adorned with an assortment of baked goods, including cookies, cakes, and pastries, neatly arranged on trays and shelves. To the left, two bear-like characters stand in line, waiting their turn, while another bear-like character is seen holding a bag. The background showcases a display case filled with more baked items, including heart-shaped cakes and other treats. The overall atmosphere is warm and inviting, with a focus on the delightful interaction between the characters and the bakery's offerings.",
+    "dataset_path": "C:/Users/marco/Pictures/loras_pics/ink_hatching/512_cropped_images"
+}

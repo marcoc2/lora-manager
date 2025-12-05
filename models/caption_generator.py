@@ -23,11 +23,30 @@ transformers.utils.hub.has_file = _always_true
 # Substituir a função original
 transformers.utils.hub._is_true = _always_true
 
+# Fix for Florence-2 SDPA error: Monkey patch PreTrainedModel.get_correct_attn_implementation
+# This bypasses the check entirely if it fails
+from transformers.modeling_utils import PreTrainedModel
+
+if not hasattr(PreTrainedModel, "_patched_attn_impl"):
+    original_get_attn = PreTrainedModel.get_correct_attn_implementation
+    
+    def patched_get_attn(self, *args, **kwargs):
+        try:
+            return original_get_attn(self, *args, **kwargs)
+        except AttributeError:
+            # Fallback if _supports_sdpa is missing
+            return "eager"
+            
+    PreTrainedModel.get_correct_attn_implementation = patched_get_attn
+    PreTrainedModel._patched_attn_impl = True
+
 def fixed_get_imports(filename: str | os.PathLike) -> list[str]:
     if os.path.basename(filename) != "modeling_florence2.py":
         return get_imports(filename)
     imports = get_imports(filename)
-    imports.remove("flash_attn")
+    # Remove flash_attn only if it's in the list (safe remove)
+    if "flash_attn" in imports:
+        imports.remove("flash_attn")
     return imports
 
 class CaptionGenerator:
@@ -51,6 +70,22 @@ class CaptionGenerator:
                     resume_download=True,
                     local_files_only=False
                 ).to(self.device)
+                
+                # Fix for AttributeError: 'Florence2ForConditionalGeneration' object has no attribute '_supports_sdpa'
+                # Try patching via sys.modules
+                import sys
+                if self.model.__module__ in sys.modules:
+                    mod = sys.modules[self.model.__module__]
+                    if hasattr(mod, "Florence2ForConditionalGeneration"):
+                        mod.Florence2ForConditionalGeneration._supports_sdpa = False
+                        print("Patched Florence2ForConditionalGeneration class in module")
+                
+                # Also patch instance
+                self.model._supports_sdpa = False
+                
+                print(f"DEBUG: Model type: {type(self.model)}", flush=True)
+                print(f"DEBUG: Has _supports_sdpa: {hasattr(self.model, '_supports_sdpa')}", flush=True)
+                print(f"DEBUG: _supports_sdpa value: {getattr(self.model, '_supports_sdpa', 'MISSING')}", flush=True)
                 
                 self.processor = AutoProcessor.from_pretrained(
                     identifier,
@@ -111,7 +146,8 @@ class CaptionGenerator:
                     num_beams=5,
                     do_sample=False,
                     length_penalty=1.0,
-                    repetition_penalty=1.5
+                    repetition_penalty=1.5,
+                    use_cache=False # Fix for AttributeError: 'NoneType' object has no attribute 'shape'
                 )
                 
                 generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]

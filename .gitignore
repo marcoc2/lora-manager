@@ -172,3 +172,7 @@ cython_debug/
 
 # Ignore Windows shortcut files
 *.lnk
+models/*.safetensors
+
+*.crdownload
+*.gguf

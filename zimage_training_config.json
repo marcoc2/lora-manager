@@ -1,0 +1,19 @@
+{
+    "model_path": "Tongyi-MAI/Z-Image-Turbo",
+    "adapter_path": "./models/zimage_turbo_training_adapter_v2.safetensors",
+    "text_encoder_path": "Tongyi-MAI/Z-Image-Turbo",
+    "tokenizer_path": "",
+    "steps": 4500,
+    "batch_size": 1,
+    "learning_rate": "1e-4",
+    "resolution": 1024,
+    "rank": 32,
+    "alpha": 32,
+    "output_dir": "F:/AppsCrucial/ComfyUI_phoenix2/ComfyUI/models/loras/zimage/",
+    "output_name": "mandelbrot_fractal_zimage_turbo_512",
+    "save_every": 250,
+    "sample_every": 50,
+    "sample_prompts": "This image shows a segment of a Mandelbrot fractal with spiraling blue and green patterns against a deep purple-blue background. The fractal arms radiate from a central spiral, resembling frost or cosmic swirls. Miniature black Mandelbrot sets dot the fractal, highlighted by sharp yellow edges. The glowing blue-to-green gradient of the fractal contrasts vividly with the darker backdrop, creating a sense of depth and movement. The overall effect is both organic and otherworldly.",
+    "enable_sampling": true,
+    "dataset_path": "C:/Users/marco/Pictures/loras_pics/archive/fractals/23_fractals/cropped_images"
+}

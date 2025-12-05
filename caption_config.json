@@ -1,0 +1,10 @@
+{
+  "method": "Florence-2",
+  "trigger_word": "vqgan_clip",
+  "prefix": "",
+  "custom_prompt": "Describe this image in rich detail, including the subject, setting, colors, mood, and any notable elements. These are images generated from a old txt2img technique called \"vqgan_clip\"",
+  "prompt_template": "Detailed",
+  "model_type": null,
+  "janus_context": null,
+  "replace_prompt": false
+}

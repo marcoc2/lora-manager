@@ -1,0 +1,32 @@
+WARNING:torchao.kernel.intmm:Warning: Detected no triton, on systems without Triton certain kernels will not work
+Starting Florence-2 test...
+Generator initialized.
+C:\Apps\sd-scripts\venv\lib\site-packages\huggingface_hub\file_download.py:942: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
+  warnings.warn(
+`torch_dtype` is deprecated! Use `dtype` instead!
+Traceback (most recent call last):
+  File "F:\AppsCrucial\lora-manager\test_florence.py", line 29, in <module>
+    caption = generator.generate_caption(dummy_path)
+  File "F:\AppsCrucial\lora-manager\models\caption_generator.py", line 107, in generate_caption
+    self._init_model()
+  File "F:\AppsCrucial\lora-manager\models\caption_generator.py", line 59, in _init_model
+    self.model = AutoModelForCausalLM.from_pretrained(
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\transformers\models\auto\auto_factory.py", line 597, in from_pretrained
+    return model_class.from_pretrained(
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\transformers\modeling_utils.py", line 277, in _wrapper
+    return func(*args, **kwargs)
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\transformers\modeling_utils.py", line 4971, in from_pretrained
+    model = cls(config, *model_args, **model_kwargs)
+  File "F:\Models\HuggingFace\modules\transformers_modules\microsoft\Florence_hyphen_2_hyphen_base\5ca5edf5bd017b9919c05d08aebef5e4c7ac3bac\modeling_florence2.py", line 2535, in __init__
+    super().__init__(config)
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\transformers\modeling_utils.py", line 2076, in __init__
+    self.config._attn_implementation_internal = self._check_and_adjust_attn_implementation(
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\transformers\modeling_utils.py", line 2686, in _check_and_adjust_attn_implementation
+    applicable_attn_implementation = self.get_correct_attn_implementation(
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\transformers\modeling_utils.py", line 2722, in get_correct_attn_implementation
+    self._sdpa_can_dispatch(is_init_check)
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\transformers\modeling_utils.py", line 2573, in _sdpa_can_dispatch
+    if not self._supports_sdpa:
+  File "C:\Apps\sd-scripts\venv\lib\site-packages\torch\nn\modules\module.py", line 1729, in __getattr__
+    raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+AttributeError: 'Florence2ForConditionalGeneration' object has no attribute '_supports_sdpa'

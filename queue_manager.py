@@ -1,186 +1,261 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                            QPushButton, QListWidget, QListWidgetItem, QGroupBox,
-                            QTextEdit, QMessageBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+import sys
+import os
 import queue
+import subprocess
 import threading
+import time
+import re
+import yaml
+import video_utils
 from pathlib import Path
 from datetime import datetime
 
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, 
+                            QListWidgetItem, QPushButton, QLabel, QGroupBox, 
+                            QTextEdit, QProgressBar, QMessageBox)
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QThread, QTimer, QUrl
+from PyQt6.QtGui import QPixmap, QDesktopServices
+
+from preview_window import PreviewWindow
+
+class ClickableLabel(QLabel):
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
 class TrainingTask:
-    def __init__(self, command, dataset_path, output_name):
+    def __init__(self, command, dataset_path, output_name, metadata=None):
         self.command = command
         self.dataset_path = Path(dataset_path)
         self.output_name = output_name
-        self.status = "Queued"
-        self.progress = 0
+        self.metadata = metadata or {}
+        self.status = "Pending"  # Pending, Running, Completed, Failed
+        self.created_at = datetime.now()
         self.start_time = None
-        self.end_time = None
         
     def get_display_text(self):
-        status_emoji = {
-            "Queued": "⏳",
-            "Running": "▶️",
-            "Completed": "✅",
-            "Failed": "❌",
-        }
-        
-        elapsed = ""
-        if self.start_time:
-            if self.end_time:
-                elapsed = f" ({(self.end_time - self.start_time).seconds // 60}m)"
-            else:
-                elapsed = f" ({(datetime.now() - self.start_time).seconds // 60}m)"
-                
-        return f"{status_emoji[self.status]} {self.output_name} - {self.status}{elapsed}"
+        return f"[{self.status}] {self.output_name} ({self.created_at.strftime('%H:%M')})"
 
 class TrainingWorker(QThread):
-    task_progress = pyqtSignal(str)
     task_completed = pyqtSignal(bool)
+    task_progress = pyqtSignal(str)
     
     def __init__(self, task):
         super().__init__()
         self.task = task
         self.process = None
-        
+        self.is_running = True
+
     def run(self):
         try:
-            import subprocess
-            import io
-            import os
-            self.task.start_time = datetime.now()
-            
             # Configurar environment para UTF-8
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
             env['PYTHONLEGACYWINDOWSSTDIO'] = '0'
             
-            # Cria o processo com as configurações corretas para Windows
+            # Criar processo
             self.process = subprocess.Popen(
                 self.task.command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 shell=True,
-                universal_newlines=True,  # Mudado para True para facilitar a leitura
+                universal_newlines=True,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                 bufsize=1,
-                encoding='utf-8',  # Especifica a codificação diretamente
-                errors='replace',   # Lida com caracteres inválidos
-                env=env  # Passa as variáveis de ambiente
+                encoding='utf-8',
+                errors='replace',
+                env=env
             )
             
-            # Lê a saída linha por linha em tempo real
+            # Ler saída em tempo real
             for line in self.process.stdout:
+                if not self.is_running:
+                    break
                 line = line.strip()
-                if line:  # Só emite se não for linha vazia
+                if line:
                     self.task_progress.emit(line)
             
-            self.process.wait()  # Espera o processo terminar
-            
-            self.task.end_time = datetime.now()
-            returncode = self.process.returncode
-            
-            if returncode == 3221225477:  # 0xC0000005
-                error_msg = ("Memory access error (0xC0000005). This usually means:\n"
-                           "1. Not enough RAM/VRAM for the current settings\n"
-                           "2. Try reducing batch size or model dimensions\n"
-                           "3. Check if other programs are using GPU memory\n"
-                           "4. Try restarting your computer if problem persists")
-                self.task_progress.emit(error_msg)
-                success = False
-            else:
-                success = returncode == 0
-                
+            self.process.wait()
+            success = self.process.returncode == 0
             self.task_completed.emit(success)
             
         except Exception as e:
-            self.task.end_time = datetime.now()
-            error_msg = f"Error in training process: {str(e)}"
-            print(error_msg)
-            self.task_progress.emit(error_msg)
+            self.task_progress.emit(f"Error running task: {str(e)}")
             self.task_completed.emit(False)
+
+    def stop(self):
+        self.is_running = False
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.kill()
+            except:
+                pass
+
+class PostProcessingWorker(QThread):
+    finished = pyqtSignal(bool)
+    progress = pyqtSignal(str)
+    
+    def __init__(self, command, name="Post-Processing"):
+        super().__init__()
+        self.command = command
+        self.name = name
+        self.process = None
+        self.is_running = True
+
+    def run(self):
+        try:
+            # Configurar environment
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
             
-        finally:
-            if self.process:
-                try:
-                    self.process.stdout.close()
-                    self.process.wait(timeout=5)  # Espera até 5 segundos pelo processo terminar
-                except:
-                    pass
+            # Criar processo
+            self.process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                shell=False, # False because we pass list of args
+                universal_newlines=True,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                bufsize=1,
+                encoding='utf-8',
+                errors='replace',
+                env=env
+            )
+            
+            for line in self.process.stdout:
+                if not self.is_running:
+                    break
+                self.progress.emit(f"[{self.name}] {line.strip()}")
+            
+            self.process.wait()
+            self.finished.emit(self.process.returncode == 0)
+            
+        except Exception as e:
+            self.progress.emit(f"Error in {self.name}: {str(e)}")
+            self.finished.emit(False)
+
+    def stop(self):
+        self.is_running = False
+        if self.process:
+            try:
+                self.process.terminate()
+            except:
+                pass
 
 class QueueManager(QWidget):
     signal_add_task = pyqtSignal(object)
     signal_update_task = pyqtSignal(object)
     signal_append_log = pyqtSignal(str)
     signal_clear_log = pyqtSignal()
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.task_queue = queue.Queue()
         self.current_task = None
         self.workers = []
         self.is_processing = False
-        
+
+        # Preview monitoring
+        self.preview_enabled = False
+        self.current_samples_dir = None
+        self.last_preview_file = None
+        self.active_preview_window = None
+
         # Conecta sinais aos slots
         self.signal_add_task.connect(self._add_task_to_list)
         self.signal_update_task.connect(self._update_task_in_list)
         self.signal_append_log.connect(self._append_to_log)
         self.signal_clear_log.connect(self._clear_log)
-        
+
         self.init_ui()
-        
+
         # Start the queue processing
         self.queue_processor = threading.Thread(target=self.process_queue, daemon=True)
         self.queue_processor.start()
+
+        # Start preview monitoring timer
+        self.preview_timer = QTimer()
+        self.preview_timer.timeout.connect(self.check_for_new_samples)
+        self.preview_timer.start(5000)  # Check every 5 seconds
         
     def init_ui(self):
         layout = QVBoxLayout()
-        
-        # Queue display group
+
+        # Upper section: Queue list and Preview side-by-side
+        upper_layout = QHBoxLayout()
+
+        # Queue display group (left side)
         queue_group = QGroupBox("Training Queue")
         queue_layout = QVBoxLayout()
-        
+
         # Queue list
         self.queue_list = QListWidget()
         self.queue_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.queue_list.setMaximumHeight(200)
         queue_layout.addWidget(self.queue_list)
-        
+
         # Control buttons
         button_layout = QHBoxLayout()
-        
+
         self.clear_completed_btn = QPushButton("Clear Completed")
         self.clear_completed_btn.clicked.connect(self.clear_completed_tasks)
-        
+
         self.clear_all_btn = QPushButton("Clear All")
         self.clear_all_btn.clicked.connect(self.clear_all_tasks)
-        
+
         self.reset_queue_btn = QPushButton("Reset Queue")
         self.reset_queue_btn.clicked.connect(self.reset_queue)
         self.reset_queue_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; }")
-        
+
         button_layout.addWidget(self.clear_completed_btn)
         button_layout.addWidget(self.clear_all_btn)
         button_layout.addWidget(self.reset_queue_btn)
-        
+
         queue_layout.addLayout(button_layout)
         queue_group.setLayout(queue_layout)
-        layout.addWidget(queue_group)
-        
-        # Log output group
+        upper_layout.addWidget(queue_group)
+
+        # Preview group (right side)
+        preview_group = QGroupBox("Training Preview")
+        preview_layout = QVBoxLayout()
+
+        self.preview_label = ClickableLabel("No samples yet")
+        self.preview_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preview_label.clicked.connect(self.open_preview_window)
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(400, 200)
+        self.preview_label.setMaximumHeight(200)
+        self.preview_label.setStyleSheet("border: 1px dashed #666; background-color: #222;")
+        self.preview_label.setScaledContents(False)  # Keep aspect ratio
+        preview_layout.addWidget(self.preview_label)
+
+        self.preview_status = QLabel("Waiting for training to start...")
+        self.preview_status.setStyleSheet("color: #999; font-size: 10px;")
+        self.preview_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview_layout.addWidget(self.preview_status)
+
+        preview_group.setLayout(preview_layout)
+        upper_layout.addWidget(preview_group)
+
+        layout.addLayout(upper_layout)
+
+        # Log output group (bottom)
         log_group = QGroupBox("Training Output")
         log_layout = QVBoxLayout()
-        
+
         # Log text area
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.log_output.setMinimumHeight(200)
         log_layout.addWidget(self.log_output)
-        
+
         log_group.setLayout(log_layout)
         layout.addWidget(log_group)
-        
+
         self.setLayout(layout)
     
     @pyqtSlot(object)
@@ -208,9 +283,9 @@ class QueueManager(QWidget):
     def _clear_log(self):
         self.log_output.clear()
     
-    def add_task(self, command, dataset_path, output_name):
+    def add_task(self, command, dataset_path, output_name, metadata=None):
         """Add a new training task to the queue"""
-        task = TrainingTask(command, dataset_path, output_name)
+        task = TrainingTask(command, dataset_path, output_name, metadata)
         self.task_queue.put(task)
         self.signal_add_task.emit(task)
     
@@ -233,12 +308,16 @@ class QueueManager(QWidget):
             cmd = task.command
             if "dataset_config" in cmd:
                 cmd = cmd.replace("cropped_images\\cropped_images", "cropped_images")
-            
+
+            # Try to detect and configure preview monitoring
+            self._setup_preview_for_task(cmd)
+
             self.signal_clear_log.emit()
             self.signal_append_log.emit(f"Starting training for: {task.output_name}\n")
             self.signal_append_log.emit(f"Command: {cmd}\n")
             self.signal_append_log.emit("="*50 + "\n")
             
+            task.start_time = datetime.now().timestamp()
             worker = TrainingWorker(task)
             worker.task_progress.connect(self._handle_task_progress)
             worker.task_completed.connect(lambda success: self.task_finished(task, success))
@@ -261,6 +340,7 @@ class QueueManager(QWidget):
             training_command = cache_info["training_command"]
             
             task.status = "Running"
+            task.start_time = datetime.now().timestamp()
             self.signal_update_task.emit(task)
             self.signal_clear_log.emit()
             
@@ -326,53 +406,174 @@ class QueueManager(QWidget):
             error_msg = f"Error in cache and training: {str(e)}"
             self.signal_append_log.emit(f"\nError: {error_msg}\n")
             self.task_finished(task, False)
-    
-    def _handle_task_progress(self, message):
-        """Processa as mensagens de progresso do treinamento"""
-        self.signal_append_log.emit(message + "\n")
-    
-    def task_finished(self, task, success):
-        """Handle task completion"""
-        try:
-            task.status = "Completed" if success else "Failed"
-            self.signal_update_task.emit(task)
-            
-            status_msg = "Training completed successfully!" if success else "Training failed!"
-            self.signal_append_log.emit(f"\n{status_msg}\n{'='*50}\n")
-            
-            # Clean up finished worker
-            for worker in self.workers[:]:
-                if worker.isFinished():
-                    self.workers.remove(worker)
-        finally:
-            # Garante que os estados são resetados mesmo se houver erro
-            self.current_task = None
-            self.is_processing = False
-    
-    def clear_completed_tasks(self):
-        """Remove completed tasks from the display"""
-        for i in range(self.queue_list.count() - 1, -1, -1):
-            item = self.queue_list.item(i)
-            task = item.data(Qt.ItemDataRole.UserRole)
-            if task.status in ["Completed", "Failed"]:
-                self.queue_list.takeItem(i)
-    
-    def clear_all_tasks(self):
-        """Clear all tasks from the queue"""
-        # Only clear tasks that aren't currently running
         for i in range(self.queue_list.count() - 1, -1, -1):
             item = self.queue_list.item(i)
             task = item.data(Qt.ItemDataRole.UserRole)
             if task.status != "Running":
                 self.queue_list.takeItem(i)
-                
+
         # Clear the queue except for the currently running task
         while True:
             try:
                 self.task_queue.get_nowait()
             except queue.Empty:
                 break
+
+    def _setup_preview_for_task(self, command):
+        """Parse command to extract YAML config and set up preview monitoring"""
+        try:
+            # Try to find YAML config file in command
+            # Pattern: python.exe run.py path/to/config.yaml
+            yaml_match = re.search(r'[\w/\\:.-]+\.yaml', command)
+            if not yaml_match:
+                self.set_preview_disabled("No config file detected")
+                return
+
+            yaml_path = Path(yaml_match.group(0))
+            if not yaml_path.exists():
+                self.set_preview_disabled("Config file not found")
+                return
+
+            # Parse YAML config
+            with open(yaml_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+
+            # Check if sampling is disabled
+            # Look in config.process[0].sample for disable_sampling
+            try:
+                process_config = config.get('config', {}).get('process', [{}])[0]
+                sample_config = process_config.get('sample', {})
+                disable_sampling = sample_config.get('disable_sampling', False)
+
+                if disable_sampling:
+                    self.set_preview_disabled("Sampling disabled in config")
+                    return
+            except (KeyError, IndexError, TypeError):
+                # If we can't find the config, assume sampling is enabled
+                pass
+
+            # Get output directory (training_folder from config.process[0])
+            try:
+                training_folder = process_config.get('training_folder', '')
+                if not training_folder:
+                    self.set_preview_disabled("No training folder in config")
+                    return
+
+                # Build samples directory path
+                samples_dir = Path(training_folder) / 'samples'
+                self.enable_preview(str(samples_dir))
+
+            except Exception as e:
+                self.set_preview_disabled(f"Error parsing config: {str(e)}")
+
+        except Exception as e:
+            # If anything fails, disable preview
+            self.set_preview_disabled(f"Config error: {str(e)}")
+
+    def check_for_new_samples(self):
+        """Automatically check for new sample images from ai-toolkit"""
+        if not self.preview_enabled or not self.current_samples_dir:
+            return
+
+        try:
+            samples_path = Path(self.current_samples_dir)
+            if not samples_path.exists():
+                return
+
+            # Find all image files in samples directory
+            image_files = []
+            for ext in ['*.png', '*.jpg', '*.jpeg']:
+                image_files.extend(samples_path.glob(ext))
+
+            if not image_files:
+                return
+
+            # Filter images created after task start
+            if self.current_task and self.current_task.start_time:
+                image_files = [p for p in image_files if p.stat().st_mtime > self.current_task.start_time]
+
+            if not image_files:
+                return
+
+            # Get the most recent image
+            latest_image = max(image_files, key=lambda p: p.stat().st_mtime)
+
+            # Only update if it's a new image
+            if str(latest_image) != self.last_preview_file:
+                self.last_preview_file = str(latest_image)
+                self.update_preview_image(latest_image)
                 
+                # Copy to destination immediately
+                if self.current_task:
+                    self._copy_sample_to_destination(latest_image, self.current_task)
+
+        except Exception as e:
+            # Silently ignore errors (directory might not exist yet)
+            pass
+
+    def _copy_sample_to_destination(self, image_path, task):
+        """Copy a sample image to the destination folder immediately"""
+        try:
+            model_type = task.metadata.get("model_type")
+            if not model_type:
+                return
+
+            dataset_path = task.dataset_path
+            dest_folder = dataset_path / model_type
+            dest_folder.mkdir(parents=True, exist_ok=True)
+            
+            import shutil
+            shutil.copy2(image_path, dest_folder / image_path.name)
+            
+        except Exception as e:
+            print(f"Error copying sample: {e}")
+
+    def update_preview_image(self, image_path):
+        """Update the preview label with the new image"""
+        try:
+            pixmap = QPixmap(str(image_path))
+            if not pixmap.isNull():
+                # Scale image to fit while maintaining aspect ratio
+                scaled_pixmap = pixmap.scaled(
+                    self.preview_label.width() - 10,
+                    self.preview_label.height() - 10,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.preview_label.setPixmap(scaled_pixmap)
+
+                # Update status
+                filename = Path(image_path).name
+                file_time = datetime.fromtimestamp(Path(image_path).stat().st_mtime)
+                time_str = file_time.strftime("%H:%M:%S")
+                self.preview_status.setText(f"Latest sample: {filename} ({time_str})")
+                self.preview_status.setStyleSheet("color: #4CAF50; font-size: 10px;")
+
+                # Update external window if open
+                if self.active_preview_window and self.active_preview_window.isVisible():
+                    self.active_preview_window.update_image(image_path)
+        except Exception as e:
+            self.preview_status.setText(f"Error loading image: {str(e)}")
+            self.preview_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+
+    def set_preview_disabled(self, reason="Sampling disabled in config"):
+        """Disable preview widget with a reason"""
+        self.preview_enabled = False
+        self.preview_label.setText(reason)
+        self.preview_label.setStyleSheet("border: 1px dashed #666; background-color: #1a1a1a; color: #666;")
+        self.preview_status.setText("Preview is disabled")
+        self.preview_status.setStyleSheet("color: #666; font-size: 10px;")
+
+    def enable_preview(self, samples_dir):
+        """Enable preview monitoring for a samples directory"""
+        self.preview_enabled = True
+        self.current_samples_dir = samples_dir
+        self.last_preview_file = None
+        self.preview_label.setText("Waiting for samples...")
+        self.preview_label.setStyleSheet("border: 1px dashed #666; background-color: #222; color: #999;")
+        self.preview_status.setText("Monitoring for new samples...")
+        self.preview_status.setStyleSheet("color: #2196F3; font-size: 10px;")
+
     def reset_queue(self):
         """Reset the entire queue system (emergency reset)"""
         from PyQt6.QtWidgets import QMessageBox
@@ -410,3 +611,124 @@ class QueueManager(QWidget):
             self.log_output.clear()
             
             self.signal_append_log.emit("Queue has been reset. You can now add new tasks.\n")
+
+    def open_preview_window(self):
+        """Open the current preview image in a separate window"""
+        if not self.last_preview_file or not Path(self.last_preview_file).exists():
+            return
+
+        if self.active_preview_window is None:
+            self.active_preview_window = PreviewWindow(self.last_preview_file, self)
+            self.active_preview_window.finished.connect(self._on_preview_closed)
+            self.active_preview_window.show()
+        else:
+            self.active_preview_window.update_image(self.last_preview_file)
+            self.active_preview_window.show()
+            self.active_preview_window.raise_()
+            self.active_preview_window.activateWindow()
+
+    def _on_preview_closed(self):
+        self.active_preview_window = None
+
+    def _handle_task_progress(self, line):
+        """Handle progress updates from the worker"""
+        self.signal_append_log.emit(line)
+
+    def task_finished(self, task, success):
+        """Handle task completion"""
+        if success:
+            task.status = "Completed"
+            self.signal_append_log.emit(f"\nTask completed successfully: {task.output_name}\n")
+            
+            # Post-processing (Video Generation)
+            self._handle_post_processing(task)
+            
+        else:
+            task.status = "Failed"
+            self.signal_append_log.emit(f"\nTask failed: {task.output_name}\n")
+
+        self.signal_update_task.emit(task)
+        
+        # Remove worker
+        for worker in self.workers:
+            if worker.task == task:
+                self.workers.remove(worker)
+                break
+        
+        self.current_task = None
+        self.is_processing = False
+        self.signal_append_log.emit("="*50 + "\n")
+
+    def _handle_post_processing(self, task):
+        """Handle post-processing steps like video generation"""
+        try:
+            model_type = task.metadata.get("model_type")
+            if not model_type:
+                self.signal_append_log.emit("Skipping post-processing: No model_type found in metadata.\n")
+                return
+
+            samples_dir = task.dataset_path / model_type
+            self.signal_append_log.emit(f"Post-processing: Checking for images in {samples_dir}\n")
+            
+            if samples_dir.exists():
+                # Define paths
+                video_path = samples_dir / "preview_rife.mp4"
+                script_path = Path(os.getcwd()) / "interpolate_rife_torch.py"
+                
+                if not script_path.exists():
+                    self.signal_append_log.emit(f"Error: RIFE script not found at {script_path}\n")
+                    return
+
+                self.signal_append_log.emit(f"Starting RIFE Interpolation...\n")
+                self.signal_append_log.emit(f"Input: {samples_dir}\n")
+                self.signal_append_log.emit(f"Output: {video_path}\n")
+
+                # Construct command
+                # python interpolate_rife_torch.py --input "..." --output "..." --multiplier 8 --fps 24
+                cmd = [
+                    sys.executable,
+                    str(script_path),
+                    "--input", str(samples_dir),
+                    "--output", str(video_path),
+                    "--multiplier", "8",
+                    "--fps", "24"
+                ]
+                
+                # Start worker
+                worker = PostProcessingWorker(cmd, "RIFE Interpolation")
+                worker.progress.connect(self._handle_task_progress)
+                worker.finished.connect(lambda success: self._on_post_processing_finished(success, video_path))
+                worker.start()
+                self.workers.append(worker)
+                
+            else:
+                self.signal_append_log.emit(f"Samples directory not found: {samples_dir}\n")
+
+        except Exception as e:
+            self.signal_append_log.emit(f"Error in post-processing: {str(e)}\n")
+            import traceback
+            self.signal_append_log.emit(traceback.format_exc() + "\n")
+
+    def _on_post_processing_finished(self, success, video_path):
+        if success:
+            self.signal_append_log.emit(f"\nRIFE Interpolation completed successfully!\n")
+            self.signal_append_log.emit(f"Video saved to: {video_path}\n")
+        else:
+            self.signal_append_log.emit(f"\nRIFE Interpolation failed.\n")
+        self.signal_append_log.emit("="*50 + "\n")
+
+    def clear_completed_tasks(self):
+        """Clear completed and failed tasks from the list"""
+        for i in range(self.queue_list.count() - 1, -1, -1):
+            item = self.queue_list.item(i)
+            task = item.data(Qt.ItemDataRole.UserRole)
+            if task.status in ["Completed", "Failed"]:
+                self.queue_list.takeItem(i)
+
+    def clear_all_tasks(self):
+        """Clear all tasks except running ones"""
+        for i in range(self.queue_list.count() - 1, -1, -1):
+            item = self.queue_list.item(i)
+            task = item.data(Qt.ItemDataRole.UserRole)
+            if task.status != "Running":
+                self.queue_list.takeItem(i)

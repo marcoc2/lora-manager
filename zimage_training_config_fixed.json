@@ -1,0 +1,17 @@
+{
+    "model_path": "Tongyi-MAI/Z-Image-Turbo",
+    "adapter_path": "./models/zimage_turbo_training_adapter_v2.safetensors",
+    "text_encoder_path": "",
+    "tokenizer_path": "",
+    "steps": 3000,
+    "batch_size": 1,
+    "learning_rate": "1e-4",
+    "resolution": 1024,
+    "rank": 32,
+    "alpha": 32,
+    "output_dir": "F:/AppsCrucial/ComfyUI_phoenix2/ComfyUI/models/loras/zimage/",
+    "output_name": "b0bb13_g00ds_zimage_1024",
+    "save_every": 250,
+    "sample_prompts": "b0bb13_g00ds Coloring book illustration with thick outlines. The image depicts a cozy bakery scene with a variety of animals interacting within it.",
+    "dataset_path": "C:/Users/marco/Pictures/loras_pics/bobbie_goods/cropped_images"
+}

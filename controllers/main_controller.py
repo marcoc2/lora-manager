@@ -9,10 +9,13 @@ from views.dialogs.suffix_input_dialog import SuffixInputDialog
 from views.dialogs.toml_config_dialog import TomlConfigDialog
 from views.dialogs.qwen_toml_config_dialog import QwenTomlConfigDialog
 from views.dialogs.caption_config_dialog import CaptionConfigDialog
+from views.dialogs.caption_progress_dialog import CaptionProgressDialog
+from views.dialogs.batch_caption_editor import BatchCaptionEditor
 from models.image_processor import ImageProcessor
 from models.caption_generator import CaptionGenerator
 from models.danbooru_generator import DanbooruGenerator
 from models.janus_generator import JanusGenerator
+from controllers.caption_controller import CaptionController
 from training_widgets import CommandOutputDialog
 
 class MainController(QObject):
@@ -21,6 +24,7 @@ class MainController(QObject):
         self.view = view
         self.dataset_path = None
         self.image_processor = ImageProcessor()
+        self.caption_controller = CaptionController(self)
 
         self.connect_signals()
 
@@ -32,6 +36,10 @@ class MainController(QObject):
         self.view.rename_and_convert_images_clicked.connect(self.rename_and_convert_images)
         self.view.analyze_dataset_clicked.connect(self.analyze_dataset)
         self.view.artifact_selected.connect(self.load_artifact_info)
+
+        # Connect caption panel directly (MVC pattern)
+        if hasattr(self.view, 'caption_panel'):
+            self.view.caption_panel.generate_clicked.connect(self.generate_captions)
 
     def select_dataset_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, "Select Dataset Folder")
@@ -155,70 +163,66 @@ class MainController(QObject):
         except Exception as e:
             self.view.show_critical("Error", f"Error processing images: {str(e)}")
 
-    def generate_captions(self):
+    def generate_captions(self, config: dict = None):
+        """
+        Generate captions using the new CaptionController.
+        Can be called with config (from view signal) or without (legacy support).
+        """
         if not self.dataset_path:
-            self.view.show_warning("Warning", "Please select a dataset folder first!")
+            self.view.show_warning("Aviso", "Por favor, selecione uma pasta de dataset primeiro!")
             return
-            
-        try:
-            cropped_dir = self.dataset_path / "cropped_images"
-            if not cropped_dir.exists():
-                self.view.show_warning("Warning", "Please process images first!")
-                return
-            
-            n_files = sum(1 for _ in cropped_dir.glob("*.[jp][pn][g]"))
-            if n_files == 0:
-                self.view.show_warning("Warning", "No images found in cropped_images folder!")
-                return
-            
+
+        # If config not provided, show config dialog (legacy support)
+        if config is None:
             config_dialog = CaptionConfigDialog(self.view)
             if config_dialog.exec() != config_dialog.DialogCode.ACCEPTED:
                 return
-                
             config = config_dialog.get_values()
-            
-            progress = self.view.show_progress_dialog("Generating captions...", "Cancel", 0, 100)
-            progress.show()
-            
-            def update_progress(message: str, value: int):
-                if value >= 0:
-                    progress.setLabelText(message)
-                    progress.setValue(value)
-            
-            captions_dir = cropped_dir / "captions"
-            
-            if config['method'] == "Florence-2":
-                generator = CaptionGenerator()
-            elif config['method'] == "Danbooru":
-                model_type = config.get('model_type', 'vit')
-                generator = DanbooruGenerator(model_type=model_type)
-            else:  # Janus-7B
-                generator = JanusGenerator()
-                if config['janus_context']:
-                    if config['replace_prompt']:
-                        generator.set_prompt(config['janus_context'])
-                    else:
-                        generator.add_context(config['janus_context'])
-            
-            processed, failed = generator.process_directory(
-                cropped_dir,
-                captions_dir,
-                prefix=config['prefix'],
-                progress_callback=update_progress
-            )
-            
-            progress.close()
-            
-            self.view.show_message("Success", 
-                f"Caption generation complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
-            
-            self.view.populate_tree_view(self.dataset_path)
-            self.update_status()
-            
+
+        try:
+            # Create and show progress dialog
+            progress_dialog = CaptionProgressDialog(self.view)
+
+            # Connect controller signals to progress dialog
+            self.caption_controller.caption_generated.connect(progress_dialog.on_caption_ready)
+            self.caption_controller.progress_updated.connect(progress_dialog.on_progress_updated)
+            self.caption_controller.error_occurred.connect(progress_dialog.on_error)
+            self.caption_controller.processing_complete.connect(progress_dialog.on_complete)
+
+            # Connect progress dialog signals
+            progress_dialog.cancel_requested.connect(self.caption_controller.cancel_processing)
+            progress_dialog.batch_edit_requested.connect(self.open_batch_caption_editor)
+
+            # Start caption generation in background
+            self.caption_controller.start_caption_generation(config, self.dataset_path)
+
+            # Show progress dialog (blocks until complete or cancelled)
+            progress_dialog.exec()
+
+            # Refresh UI after completion
+            if hasattr(self.view, 'populate_image_grid'):
+                self.view.populate_image_grid(self.dataset_path)
+
+            if hasattr(self, 'update_status'):
+                self.update_status()
+
         except Exception as e:
             import traceback
-            error_msg = f"Error generating captions:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-            self.view.show_critical("Error", error_msg)
+            error_msg = f"Erro ao gerar captions:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            self.view.show_critical("Erro", error_msg)
+
+    def open_batch_caption_editor(self, captions_data: list):
+        """Open the batch caption editor with the provided caption data"""
+        try:
+            editor = BatchCaptionEditor(captions_data, self.view)
+            editor.exec()
+
+            # Refresh UI after editing
+            if hasattr(self.view, 'populate_image_grid'):
+                self.view.populate_image_grid(self.dataset_path)
+
+        except Exception as e:
+            self.view.show_critical("Erro", f"Erro ao abrir editor de captions: {str(e)}")
 
     def generate_all_toml(self):
         if not self.dataset_path:

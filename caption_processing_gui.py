@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
 from PyQt6.QtCore import Qt
 
 from gui_components import TomlConfigDialog, CaptionConfigDialog
-from caption_generator import CaptionGenerator
-from danbooru_generator import DanbooruGenerator
+from models.caption_generator import CaptionGenerator
+from models.danbooru_generator import DanbooruGenerator
 
 class CaptionProcessingPanel(QWidget):
     def __init__(self, main_window):
@@ -25,13 +25,7 @@ class CaptionProcessingPanel(QWidget):
         caption_group = self.create_caption_generation_group()
         layout.addWidget(caption_group)
         
-        # 2. Dataset Configuration Group
-        dataset_group = self.create_dataset_config_group()
-        layout.addWidget(dataset_group)
-        
-        # 3. Analysis Group
-        analysis_group = self.create_analysis_group()
-        layout.addWidget(analysis_group)
+
         
         self.setLayout(layout)
 
@@ -48,50 +42,39 @@ class CaptionProcessingPanel(QWidget):
         group.setLayout(layout)
         return group
 
-    def create_dataset_config_group(self):
-        group = QGroupBox("2. Dataset Configuration")
-        group.setMinimumHeight(100)
-        layout = QVBoxLayout()
-        layout.setContentsMargins(10, 15, 10, 15)
-        
-        generate_toml_btn = QPushButton("Generate dataset.toml")
-        generate_toml_btn.clicked.connect(self.generate_toml)
-        layout.addWidget(generate_toml_btn)
-        
-        group.setLayout(layout)
-        return group
 
-    def create_analysis_group(self):
-        group = QGroupBox("3. Dataset Analysis")
-        group.setMinimumHeight(100)
-        layout = QVBoxLayout()
-        layout.setContentsMargins(10, 15, 10, 15)
-        
-        analyze_btn = QPushButton("Analyze Dataset")
-        analyze_btn.clicked.connect(self.analyze_dataset)
-        layout.addWidget(analyze_btn)
-        
-        group.setLayout(layout)
-        return group
+
+
 
     def on_dataset_changed(self, dataset_path):
         self.dataset_path = dataset_path
 
     def generate_captions(self):
+        # Get dataset path from main window
+        if hasattr(self.main_window, 'get_effective_dataset_path'):
+            self.dataset_path = self.main_window.get_effective_dataset_path()
+            
         if not self.dataset_path:
             QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
             
         try:
-            cropped_dir = self.dataset_path / "cropped_images"
-            if not cropped_dir.exists():
-                QMessageBox.warning(self, "Warning", "Please process images first!")
-                return
+            # Check if dataset_path itself has images (e.g. artifact folder)
+            has_images = any(self.dataset_path.glob("*.[jp][pn][g]"))
             
-            n_files = sum(1 for _ in cropped_dir.glob("*.[jp][pn][g]"))
-            if n_files == 0:
-                QMessageBox.warning(self, "Warning", "No images found in cropped_images folder!")
-                return
+            if has_images:
+                cropped_dir = self.dataset_path
+            else:
+                # Fallback to checking for cropped_images subdirectory
+                cropped_dir = self.dataset_path / "cropped_images"
+                if not cropped_dir.exists():
+                    QMessageBox.warning(self, "Warning", "No images found! Please select a folder with images or process images first.")
+                    return
+                
+                n_files = sum(1 for _ in cropped_dir.glob("*.[jp][pn][g]"))
+                if n_files == 0:
+                    QMessageBox.warning(self, "Warning", "No images found in cropped_images folder!")
+                    return
             
             config_dialog = CaptionConfigDialog(self)
             if config_dialog.exec() != QDialog.DialogCode.Accepted:
@@ -104,10 +87,15 @@ class CaptionProcessingPanel(QWidget):
             progress.setAutoClose(True)
             progress.show()
             
+            errors = []
             def update_progress(message: str, value: int):
                 if value >= 0:
                     progress.setLabelText(message)
                     progress.setValue(value)
+                else:
+                    # Value < 0 indicates error
+                    errors.append(message)
+                    print(f"Caption Error: {message}")
             
             captions_dir = cropped_dir / "captions"
             
@@ -118,8 +106,11 @@ class CaptionProcessingPanel(QWidget):
             elif config['method'] == "Danbooru":
                 model_type = config.get('model_type', 'vit')
                 generator = DanbooruGenerator(model_type=model_type)
+            elif config['method'] == "Qwen3-VL":
+                from models.qwen_generator import QwenGenerator
+                generator = QwenGenerator()
             else:  # Janus-7B
-                from janus_generator import JanusGenerator
+                from models.janus_generator import JanusGenerator
                 generator = JanusGenerator()
                 if config['janus_context']:
                     if config['replace_prompt']:
@@ -136,10 +127,18 @@ class CaptionProcessingPanel(QWidget):
             
             progress.close()
             
-            QMessageBox.information(self, "Success", 
-                f"Caption generation complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}")
+            msg = f"Caption generation complete!\n\nSuccessfully processed: {processed}\nFailed: {failed}"
+            if errors:
+                msg += "\n\nErrors:\n" + "\n".join(errors[:10])
+                if len(errors) > 10:
+                    msg += f"\n...and {len(errors) - 10} more errors."
             
-            self.main_window.refresh_ui()
+            if failed > 0:
+                QMessageBox.warning(self, "Completed with Errors", msg)
+            else:
+                QMessageBox.information(self, "Success", msg)
+            
+            self.main_window.populate_image_grid(self.dataset_path)
             
         except Exception as e:
             import traceback
