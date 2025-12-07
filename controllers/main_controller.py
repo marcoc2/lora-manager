@@ -189,6 +189,10 @@ class MainController(QObject):
             self.caption_controller.error_occurred.connect(progress_dialog.on_error)
             self.caption_controller.processing_complete.connect(progress_dialog.on_complete)
 
+            # Connect to caption panel for real-time list updates
+            if hasattr(self.view, 'caption_panel') and hasattr(self.view.caption_panel, 'add_caption_to_list'):
+                self.caption_controller.caption_generated.connect(self.view.caption_panel.add_caption_to_list)
+
             # Connect progress dialog signals
             progress_dialog.cancel_requested.connect(self.caption_controller.cancel_processing)
             progress_dialog.batch_edit_requested.connect(self.open_batch_caption_editor)
@@ -199,9 +203,24 @@ class MainController(QObject):
             # Show progress dialog (blocks until complete or cancelled)
             progress_dialog.exec()
 
+            # Disconnect signals to avoid duplicates on next run
+            try:
+                self.caption_controller.caption_generated.disconnect(progress_dialog.on_caption_ready)
+                self.caption_controller.progress_updated.disconnect(progress_dialog.on_progress_updated)
+                self.caption_controller.error_occurred.disconnect(progress_dialog.on_error)
+                self.caption_controller.processing_complete.disconnect(progress_dialog.on_complete)
+                if hasattr(self.view, 'caption_panel') and hasattr(self.view.caption_panel, 'add_caption_to_list'):
+                    self.caption_controller.caption_generated.disconnect(self.view.caption_panel.add_caption_to_list)
+            except (TypeError, RuntimeError):
+                pass  # Signals may already be disconnected
+
             # Refresh UI after completion
             if hasattr(self.view, 'populate_image_grid'):
                 self.view.populate_image_grid(self.dataset_path)
+
+            # Refresh caption list in caption panel (final refresh to ensure consistency)
+            if hasattr(self.view, 'caption_panel') and hasattr(self.view.caption_panel, 'refresh_captions_list'):
+                self.view.caption_panel.refresh_captions_list()
 
             if hasattr(self, 'update_status'):
                 self.update_status()

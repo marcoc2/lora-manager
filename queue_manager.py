@@ -667,40 +667,52 @@ class QueueManager(QWidget):
                 self.signal_append_log.emit("Skipping post-processing: No model_type found in metadata.\n")
                 return
 
-            samples_dir = task.dataset_path / model_type
+            # Images are in dataset_path/cropped_images/model_type
+            samples_dir = task.dataset_path / "cropped_images" / model_type
+
+            # Fallback: check if images are directly in dataset_path/model_type (for non-standard setups)
+            if not samples_dir.exists():
+                samples_dir = task.dataset_path / model_type
+
             self.signal_append_log.emit(f"Post-processing: Checking for images in {samples_dir}\n")
-            
+
             if samples_dir.exists():
-                # Define paths
-                video_path = samples_dir / "preview_rife.mp4"
-                script_path = Path(os.getcwd()) / "interpolate_rife_torch.py"
-                
-                if not script_path.exists():
-                    self.signal_append_log.emit(f"Error: RIFE script not found at {script_path}\n")
+                # Count images
+                image_count = len(list(samples_dir.glob("*.png"))) + len(list(samples_dir.glob("*.jpg")))
+                if image_count == 0:
+                    self.signal_append_log.emit(f"No images found in {samples_dir}\n")
                     return
 
-                self.signal_append_log.emit(f"Starting RIFE Interpolation...\n")
-                self.signal_append_log.emit(f"Input: {samples_dir}\n")
-                self.signal_append_log.emit(f"Output: {video_path}\n")
+                self.signal_append_log.emit(f"Found {image_count} images\n")
 
-                # Construct command
-                # python interpolate_rife_torch.py --input "..." --output "..." --multiplier 8 --fps 24
-                cmd = [
-                    sys.executable,
-                    str(script_path),
-                    "--input", str(samples_dir),
-                    "--output", str(video_path),
-                    "--multiplier", "8",
-                    "--fps", "24"
-                ]
-                
-                # Start worker
-                worker = PostProcessingWorker(cmd, "RIFE Interpolation")
-                worker.progress.connect(self._handle_task_progress)
-                worker.finished.connect(lambda success: self._on_post_processing_finished(success, video_path))
-                worker.start()
-                self.workers.append(worker)
-                
+                # Primary: Use RIFE interpolation for smooth video
+                video_path = samples_dir / "training_preview.mp4"
+                rife_script = Path(os.getcwd()) / "interpolate_rife_torch.py"
+
+                if rife_script.exists():
+                    self.signal_append_log.emit(f"Starting RIFE frame interpolation...\n")
+                    self.signal_append_log.emit(f"Input: {samples_dir}\n")
+                    self.signal_append_log.emit(f"Output: {video_path}\n")
+
+                    cmd = [
+                        sys.executable,
+                        str(rife_script),
+                        "--input", str(samples_dir),
+                        "--output", str(video_path),
+                        "--multiplier", "16",
+                        "--fps", "16"
+                    ]
+
+                    worker = PostProcessingWorker(cmd, "RIFE Interpolation")
+                    worker.progress.connect(self._handle_task_progress)
+                    worker.finished.connect(lambda success: self._on_rife_video_finished(success, video_path, samples_dir))
+                    worker.start()
+                    self.workers.append(worker)
+                else:
+                    # Fallback: simple video without interpolation
+                    self.signal_append_log.emit(f"RIFE script not found, creating simple video...\n")
+                    self._create_simple_video(samples_dir, video_path)
+
             else:
                 self.signal_append_log.emit(f"Samples directory not found: {samples_dir}\n")
 
@@ -709,12 +721,45 @@ class QueueManager(QWidget):
             import traceback
             self.signal_append_log.emit(traceback.format_exc() + "\n")
 
-    def _on_post_processing_finished(self, success, video_path):
+    def _on_rife_video_finished(self, success, video_path, samples_dir):
+        """Handle completion of RIFE interpolation"""
         if success:
-            self.signal_append_log.emit(f"\nRIFE Interpolation completed successfully!\n")
-            self.signal_append_log.emit(f"Video saved to: {video_path}\n")
+            self.signal_append_log.emit(f"\nRIFE video created successfully: {video_path}\n")
         else:
-            self.signal_append_log.emit(f"\nRIFE Interpolation failed.\n")
+            self.signal_append_log.emit(f"\nRIFE interpolation failed. Creating simple video as fallback...\n")
+            self._create_simple_video(samples_dir, video_path)
+        self.signal_append_log.emit("="*50 + "\n")
+
+    def _create_simple_video(self, samples_dir, video_path):
+        """Create a simple video without interpolation as fallback"""
+        try:
+            video_gen_script = Path(os.getcwd()) / "video_generator.py"
+            if video_gen_script.exists():
+                cmd = [
+                    sys.executable,
+                    str(video_gen_script),
+                    "--input", str(samples_dir),
+                    "--output", str(video_path),
+                    "--fps", "8"
+                ]
+                worker = PostProcessingWorker(cmd, "Simple Video")
+                worker.progress.connect(self._handle_task_progress)
+                worker.finished.connect(lambda s: self._on_simple_video_done(s, video_path))
+                worker.start()
+                self.workers.append(worker)
+            else:
+                # Direct call to video_utils
+                video_utils.create_video_from_folder(str(samples_dir), str(video_path), fps=8)
+                self.signal_append_log.emit(f"Simple video created: {video_path}\n")
+        except Exception as e:
+            self.signal_append_log.emit(f"Error creating simple video: {str(e)}\n")
+
+    def _on_simple_video_done(self, success, video_path):
+        """Handle completion of simple video fallback"""
+        if success:
+            self.signal_append_log.emit(f"\nSimple video created: {video_path}\n")
+        else:
+            self.signal_append_log.emit(f"\nFailed to create video.\n")
         self.signal_append_log.emit("="*50 + "\n")
 
     def clear_completed_tasks(self):

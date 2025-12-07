@@ -163,6 +163,7 @@ class CaptionController(QObject):
     def _get_paths(self, dataset_path: Path):
         """
         Determine images directory and captions directory.
+        Captions are ALWAYS placed inside the images directory.
 
         Args:
             dataset_path: Base dataset path
@@ -172,15 +173,32 @@ class CaptionController(QObject):
         """
         dataset_path = Path(dataset_path)
 
-        # Check if cropped_images subdirectory exists
-        cropped_images = dataset_path / "cropped_images"
-        if cropped_images.exists() and cropped_images.is_dir():
-            images_dir = cropped_images
-            captions_dir = cropped_images / "captions"
-        else:
-            # Use root dataset path
+        # Helper to check if directory has images
+        def has_images(path: Path) -> bool:
+            if not path.exists():
+                return False
+            for ext in ('*.jpg', '*.jpeg', '*.png', '*.webp'):
+                if list(path.glob(ext)):
+                    return True
+            return False
+
+        # Case 1: dataset_path itself contains images (artifact folder selected directly)
+        if has_images(dataset_path):
             images_dir = dataset_path
             captions_dir = dataset_path / "captions"
+            return images_dir, captions_dir
+
+        # Case 2: Check for cropped_images variants (cropped_images, cropped_images_512x512, etc.)
+        cropped_variants = list(dataset_path.glob("cropped_images*"))
+        for variant in cropped_variants:
+            if variant.is_dir() and has_images(variant):
+                images_dir = variant
+                captions_dir = variant / "captions"
+                return images_dir, captions_dir
+
+        # Case 3: Fallback - use dataset_path
+        images_dir = dataset_path
+        captions_dir = dataset_path / "captions"
 
         return images_dir, captions_dir
 

@@ -1,55 +1,41 @@
-import cv2
-import os
+"""
+Video utility functions.
+Wrapper around video_generator for backwards compatibility.
+"""
 from pathlib import Path
+from typing import Union, Optional
 
-def create_video_from_images(image_folder, output_video_path, fps=12):
+# Import from robust generator
+from video_generator import create_video_from_folder, create_video_from_arrays
+
+
+def create_video_from_images(
+    image_folder: Union[str, Path],
+    output_video_path: Union[str, Path],
+    fps: int = 12
+) -> Optional[Path]:
     """
     Creates a video from images in a folder.
-    
+
+    This is a wrapper around the robust video_generator for backwards compatibility.
+    Uses imageio-ffmpeg (bundled FFmpeg) which works reliably on Windows.
+
     Args:
-        image_folder (str or Path): Path to the folder containing images.
-        output_video_path (str or Path): Path to the output video file.
-        fps (int): Frames per second for the video.
+        image_folder: Path to the folder containing images.
+        output_video_path: Path to the output video file.
+        fps: Frames per second for the video.
+
+    Returns:
+        Path to the created video file, or None if failed.
     """
-    image_folder = Path(image_folder)
-    output_video_path = Path(output_video_path)
-    
-    images = sorted([img for img in image_folder.glob("*") if img.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]], key=lambda x: x.stat().st_mtime)
-    
-    if not images:
-        print(f"No images found in {image_folder}")
-        return
+    return create_video_from_folder(
+        image_folder=image_folder,
+        output_path=output_video_path,
+        fps=fps,
+        sort_by_mtime=True,
+        create_gif_fallback=True
+    )
 
-    # Find first valid image to get dimensions
-    frame = None
-    for img_path in images:
-        temp_frame = cv2.imread(str(img_path))
-        if temp_frame is not None:
-            frame = temp_frame
-            break
-            
-    if frame is None:
-        print(f"No valid images could be read in {image_folder}")
-        return
 
-    height, width, layers = frame.shape
-
-    # Define the codec and create VideoWriter object
-    # mp4v is a good option for .mp4 files
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-    video = cv2.VideoWriter(str(output_video_path), fourcc, fps, (width, height))
-
-    count = 0
-    for image in images:
-        img = cv2.imread(str(image))
-        if img is not None:
-            # Resize if dimensions don't match first frame
-            if img.shape[:2] != (height, width):
-                img = cv2.resize(img, (width, height))
-            video.write(img)
-            count += 1
-        else:
-            print(f"Warning: Could not read image {image}")
-
-    video.release()
-    print(f"Video saved to {output_video_path} ({count} frames)")
+# For direct imports
+__all__ = ['create_video_from_images', 'create_video_from_folder', 'create_video_from_arrays']

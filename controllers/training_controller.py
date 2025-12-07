@@ -489,6 +489,205 @@ class TrainingController(QObject):
             python_exe = sys.executable
         
         command = f'"{python_exe}" "{run_script}" "{yaml_path}"'
-        
+
+        return command, None
+
+    # --- Wan Logic ---
+
+    def get_wan_command(self, config, dataset_path):
+        """Generates the command for Wan 2.1/2.2 training using ai-toolkit YAML config"""
+        import yaml
+
+        # Validate inputs
+        if not config.get("output_dir"):
+            return None, "Output directory is required"
+
+        if not config.get("output_name"):
+            return None, "Output name is required"
+
+        # Prepare output directory
+        output_dir = Path(config.get("output_dir", "output"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get model version info
+        version = config.get("model_version", "wan21_14b")
+        is_wan22 = version == "wan22_14b"
+        is_wan21_1b = version == "wan21_1b"
+
+        # Ensure name is stripped of extension
+        name_no_ext = Path(config.get("output_name", "wan_lora")).stem
+
+        # Determine resolution format
+        # For video/Wan: [height, width] - Wan uses height first
+        if config.get("training_mode") == "video":
+            resolution = [config.get("resolution_height", 480), config.get("resolution_width", 832)]
+        else:
+            resolution = [config.get("resolution_width", 832)]
+
+        # Build network config
+        network_config = {
+            "type": "lora",
+            "linear": config.get("lora_rank", 32),
+            "linear_alpha": config.get("lora_alpha", 32)
+        }
+
+        # Build datasets config
+        datasets_config = [{
+            "folder_path": str(dataset_path.absolute()).replace("\\", "/"),
+            "caption_ext": "txt",
+            "caption_dropout_rate": 0.05,
+            "shuffle_tokens": False,
+            "cache_latents_to_disk": True,
+            "resolution": resolution
+        }]
+
+        # Add num_frames for video or Wan 2.2 image training
+        if config.get("training_mode") == "video":
+            datasets_config[0]["num_frames"] = config.get("num_frames", 40)
+        elif is_wan22:
+            # Wan 2.2 requires num_frames even for image training (set to 1)
+            datasets_config[0]["num_frames"] = 1
+
+        # Build train config
+        train_config = {
+            "batch_size": config.get("batch_size", 1),
+            "steps": config.get("steps", 2000),
+            "gradient_accumulation": 1,
+            "train_unet": True,
+            "train_text_encoder": False,
+            "gradient_checkpointing": config.get("gradient_checkpointing", True),
+            "noise_scheduler": "flowmatch",
+            "optimizer": "adamw8bit",
+            "lr": float(config.get("learning_rate", "1e-4")),
+            "optimizer_params": {
+                "weight_decay": 1e-4
+            },
+            "dtype": "bf16"
+        }
+
+        # Version-specific train settings
+        if is_wan22:
+            train_config["timestep_type"] = "linear"
+            train_config["switch_boundary_every"] = config.get("switch_boundary_every", 10)
+            if config.get("cache_text_embeddings", True):
+                train_config["cache_text_embeddings"] = True
+        else:
+            train_config["timestep_type"] = "sigmoid"
+            if config.get("unload_text_encoder", True):
+                train_config["unload_text_encoder"] = True
+
+        # EMA config
+        if config.get("use_ema", True):
+            train_config["ema_config"] = {
+                "use_ema": True,
+                "ema_decay": config.get("ema_decay", 0.99)
+            }
+
+        # Disable sampling if not enabled
+        if not config.get("enable_sampling", True):
+            train_config["disable_sampling"] = True
+
+        # Build model config
+        model_config = {
+            "name_or_path": config.get("name_or_path"),
+            "arch": config.get("arch", "wan21")
+        }
+
+        # Memory optimization settings
+        if config.get("quantize", True):
+            model_config["quantize"] = True
+            if is_wan22:
+                # Wan 2.2 uses special quantization with accuracy recovery adapter
+                model_config["qtype"] = "uint4|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint4.safetensors"
+
+        if config.get("quantize_te", True):
+            model_config["quantize_te"] = True
+            if is_wan22:
+                model_config["qtype_te"] = "qfloat8"
+
+        if config.get("low_vram", True) and not is_wan21_1b:
+            model_config["low_vram"] = True
+
+        # Wan 2.2 specific model_kwargs
+        if is_wan22:
+            model_config["model_kwargs"] = {
+                "train_high_noise": config.get("train_high_noise", True),
+                "train_low_noise": config.get("train_low_noise", True)
+            }
+
+        # Build sample config
+        sample_config = {
+            "sampler": "flowmatch",
+            "sample_every": config.get("sample_every", 250),
+            "width": config.get("resolution_width", 832),
+            "height": config.get("resolution_height", 480),
+            "num_frames": config.get("num_frames", 1) if config.get("training_mode") == "video" else 1,
+            "fps": config.get("fps", 16),
+            "neg": "",
+            "seed": 42,
+            "walk_seed": True,
+            "guidance_scale": config.get("guidance_scale", 5.0),
+            "sample_steps": config.get("sample_steps", 30)
+        }
+
+        # Parse sample prompts
+        prompts = [p.strip() for p in config.get("sample_prompts", "").split("\n") if p.strip()]
+        if not prompts:
+            prompts = ["a person walking in the park"]  # Default prompt
+        sample_config["prompts"] = prompts
+
+        # Build process config
+        process_config = {
+            "type": "sd_trainer",
+            "training_folder": str(output_dir.absolute()).replace("\\", "/"),
+            "device": "cuda:0",
+            "network": network_config,
+            "save": {
+                "dtype": "float16",
+                "save_every": config.get("save_every", 250),
+                "max_step_saves_to_keep": 4,
+                "push_to_hub": False
+            },
+            "datasets": datasets_config,
+            "train": train_config,
+            "model": model_config,
+            "sample": sample_config
+        }
+
+        # Add trigger word if specified
+        if config.get("trigger_word"):
+            process_config["trigger_word"] = config.get("trigger_word")
+
+        # Build full YAML config
+        yaml_config = {
+            "job": "extension",
+            "config": {
+                "name": name_no_ext,
+                "process": [process_config],
+                "meta": {
+                    "name": "[name]",
+                    "version": "1.0"
+                }
+            }
+        }
+
+        # Save YAML file
+        yaml_path = output_dir / f"{name_no_ext}_train.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_config, f, sort_keys=False, default_flow_style=False)
+
+        # Build command
+        toolkit_path = Path("reference/ai-toolkit-original").absolute()
+        run_script = toolkit_path / "run.py"
+
+        # Use the specific venv python
+        venv_python = Path("C:/Apps/sd-scripts/venv/Scripts/python.exe")
+        if venv_python.exists():
+            python_exe = str(venv_python)
+        else:
+            python_exe = sys.executable
+
+        command = f'"{python_exe}" "{run_script}" "{yaml_path}"'
+
         return command, None
 

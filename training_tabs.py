@@ -4,6 +4,7 @@ from training_widgets import TrainingWidgets
 from flux_widgets_ui import FluxTrainingWidgets
 from qwen_widgets_ui import QwenTrainingWidgets
 from zimage_widgets_ui import ZImageTrainingWidgets
+from wan_widgets_ui import WanTrainingWidgets
 from controllers.training_controller import TrainingController
 
 class TrainingTabs(QWidget):
@@ -38,18 +39,21 @@ class TrainingTabs(QWidget):
         self.flux_widget = FluxTrainingWidgets(self)
         self.qwen_widget = QwenTrainingWidgets(self)
         self.zimage_widget = ZImageTrainingWidgets(self)
-        
+        self.wan_widget = WanTrainingWidgets(self)
+
         # Add widgets to tabs
         self.tabs.addTab(self.training_widget, "LoRA Training")
         self.tabs.addTab(self.flux_widget, "Flux Training")
         self.tabs.addTab(self.qwen_widget, "Qwen-Image Training")
         self.tabs.addTab(self.zimage_widget, "Z-Image Training")
+        self.tabs.addTab(self.wan_widget, "Wan 2.1/2.2 Training")
         
         # Connect training buttons to queue
         self.training_widget.train_button.clicked.connect(self.queue_training_task)
         self.flux_widget.train_button.clicked.connect(self.queue_flux_training_task)
         self.qwen_widget.train_button.clicked.connect(self.queue_qwen_training_task)
         self.zimage_widget.train_button.clicked.connect(self.queue_zimage_training_task)
+        self.wan_widget.train_button.clicked.connect(self.queue_wan_training_task)
         
         # Connect Qwen specific actions
         self.qwen_widget.cache_latents_button.clicked.connect(self.cache_latents_action)
@@ -175,25 +179,55 @@ class TrainingTabs(QWidget):
         if not dataset_path:
             QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
-            
+
         try:
             self.zimage_widget.save_current_config()
             config = self.zimage_widget.get_config()
-            
+
             command, error = self.controller.get_zimage_command(config, dataset_path)
-            
+
             if error:
                 QMessageBox.warning(self, "Validation Error", error)
                 return
-                
+
             if command is None:
                 return
-                
+
             output_name = config.get("output_name") or "zimage_training"
             self.queue_manager.add_task(command, dataset_path, output_name, metadata={"model_type": "zimage_turbo"})
             QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
-            
+
         except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
+
+    def queue_wan_training_task(self):
+        """Add a Wan 2.1/2.2 training task to the queue"""
+        dataset_path = self.parent.get_effective_dataset_path()
+        if not dataset_path:
+            QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
+            return
+
+        try:
+            self.wan_widget.save_current_config()
+            config = self.wan_widget.get_config()
+
+            command, error = self.controller.get_wan_command(config, dataset_path)
+
+            if error:
+                QMessageBox.warning(self, "Validation Error", error)
+                return
+
+            if command is None:
+                return
+
+            output_name = config.get("output_name") or "wan_training"
+            model_version = config.get("model_version", "wan21_14b")
+            self.queue_manager.add_task(command, dataset_path, output_name, metadata={"model_type": f"wan_{model_version}"})
+            QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
 
     def cache_latents_action(self):
@@ -214,3 +248,4 @@ class TrainingTabs(QWidget):
         self.flux_widget.save_current_config()
         self.qwen_widget.save_current_config()
         self.zimage_widget.save_current_config()
+        self.wan_widget.save_current_config()

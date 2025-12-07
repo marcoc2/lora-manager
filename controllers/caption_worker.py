@@ -52,10 +52,13 @@ class CaptionWorker(QThread):
             processed = 0
             failed = 0
 
-            # Get all image files
+            # Get all image files (use lowercase only - Windows is case-insensitive)
             image_files = []
-            for ext in ('*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG'):
+            for ext in ('*.jpg', '*.jpeg', '*.png', '*.webp'):
                 image_files.extend(self.images_dir.glob(ext))
+
+            # Remove duplicates (in case glob returns same file twice)
+            image_files = list(dict.fromkeys(image_files))
 
             total = len(image_files)
             print(f"[WORKER] Found {total} images to process")
