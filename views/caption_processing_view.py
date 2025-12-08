@@ -284,31 +284,8 @@ class CaptionProcessingView(QWidget):
 
     def on_generate_clicked(self):
         """Handle generate captions button click"""
-        # Update dataset path
-        if hasattr(self.main_window, 'get_effective_dataset_path'):
-            self.dataset_path = self.main_window.get_effective_dataset_path()
-
-        if not self.dataset_path:
-            QMessageBox.warning(self, "Aviso", "Por favor, selecione uma pasta de dataset primeiro!")
-            return
-
-        # Check for images
-        try:
-            dataset_path = Path(self.dataset_path)
-            has_images = any(dataset_path.glob("*.[jp][pn][g]")) or any(dataset_path.glob("*.webp"))
-
-            if not has_images:
-                cropped_dir = dataset_path / "cropped_images"
-                if cropped_dir.exists():
-                    has_images = any(cropped_dir.glob("*.[jp][pn][g]")) or any(cropped_dir.glob("*.webp"))
-
-            if not has_images:
-                QMessageBox.warning(self, "Aviso", "Nenhuma imagem encontrada no dataset!")
-                return
-
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Erro ao verificar dataset: {str(e)}")
-            return
+        # Validation is handled by MainController via PathResolver
+        # Just build config and emit signal - controller will validate
 
         # Build config and emit signal
         config = {
@@ -339,37 +316,50 @@ class CaptionProcessingView(QWidget):
         self.save_caption_btn.setEnabled(False)
         self.delete_caption_btn.setEnabled(False)
 
-        if not self.dataset_path:
-            if hasattr(self.main_window, 'get_effective_dataset_path'):
-                self.dataset_path = self.main_window.get_effective_dataset_path()
+        # Use PathResolver if available
+        if hasattr(self.main_window, 'path_resolver') and self.main_window.path_resolver:
+            resolver = self.main_window.path_resolver
+            self.captions_dir = resolver.get_captions_directory()
+            self.dataset_path = str(resolver.get_images_directory()) if resolver.get_images_directory() else None
+        else:
+            # Fallback to old logic if resolver not available
+            if not self.dataset_path:
+                if hasattr(self.main_window, 'get_effective_dataset_path'):
+                    self.dataset_path = self.main_window.get_effective_dataset_path()
 
-        if not self.dataset_path:
+            if not self.dataset_path:
+                self.file_count_label.setText("(0 arquivos)")
+                self.stats_label.setText("")
+                return
+
+            dataset_path = Path(self.dataset_path)
+
+            # Find captions directory - check multiple possible locations
+            possible_dirs = [
+                dataset_path / "captions",  # Direct captions in selected folder
+            ]
+
+            # Add cropped_images variants (cropped_images, cropped_images_512x512, etc.)
+            for variant in dataset_path.glob("cropped_images*"):
+                if variant.is_dir():
+                    possible_dirs.append(variant / "captions")
+
+            # Also check if dataset_path itself has captions alongside images
+            possible_dirs.append(dataset_path)
+
+            self.captions_dir = None
+            for d in possible_dirs:
+                if d.exists() and any(d.glob("*.txt")):
+                    self.captions_dir = d
+                    break
+
+        if not self.captions_dir or not self.captions_dir.exists():
             self.file_count_label.setText("(0 arquivos)")
-            self.stats_label.setText("")
+            self.stats_label.setText("Nenhuma caption encontrada")
             return
 
-        dataset_path = Path(self.dataset_path)
-
-        # Find captions directory - check multiple possible locations
-        possible_dirs = [
-            dataset_path / "captions",  # Direct captions in selected folder
-        ]
-
-        # Add cropped_images variants (cropped_images, cropped_images_512x512, etc.)
-        for variant in dataset_path.glob("cropped_images*"):
-            if variant.is_dir():
-                possible_dirs.append(variant / "captions")
-
-        # Also check if dataset_path itself has captions alongside images
-        possible_dirs.append(dataset_path)
-
-        self.captions_dir = None
-        for d in possible_dirs:
-            if d.exists() and any(d.glob("*.txt")):
-                self.captions_dir = d
-                break
-
-        if not self.captions_dir:
+        # Check if there are txt files
+        if not any(self.captions_dir.glob("*.txt")):
             self.file_count_label.setText("(0 arquivos)")
             self.stats_label.setText("Nenhuma caption encontrada")
             return
@@ -393,17 +383,22 @@ class CaptionProcessingView(QWidget):
             self.stats_label.setText("")
             return
 
-        # Count images
+        # Count images using PathResolver if available
         image_count = 0
-        if self.dataset_path:
+        if hasattr(self.main_window, 'path_resolver') and self.main_window.path_resolver:
+            resolver = self.main_window.path_resolver
+            images_dir = resolver.get_images_directory()
+            if images_dir:
+                image_count = resolver.count_images(images_dir)
+        elif self.dataset_path:
+            # Fallback to manual counting
             dataset_path = Path(self.dataset_path)
+            seen = set()
             for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
-                image_count += len(list(dataset_path.glob(ext)))
-
-            cropped_dir = dataset_path / "cropped_images"
-            if cropped_dir.exists():
-                for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp"]:
-                    image_count += len(list(cropped_dir.glob(ext)))
+                for f in dataset_path.glob(ext):
+                    if f.name.lower() not in seen:
+                        seen.add(f.name.lower())
+                        image_count += 1
 
         self.stats_label.setText(f"Imagens: {image_count} | Captions: {len(self.caption_files)}")
 
@@ -641,27 +636,16 @@ class CaptionProcessingView(QWidget):
             # Determine caption file path
             img_path = Path(image_path)
 
-            # Update captions_dir if not set - find the captions folder near the image
+            # Update captions_dir if not set - use PathResolver
             if not self.captions_dir:
-                # Captions are in a "captions" subfolder of where the image is
-                image_parent = img_path.parent
-                potential_captions_dir = image_parent / "captions"
-                if potential_captions_dir.exists():
-                    self.captions_dir = potential_captions_dir
+                if hasattr(self.main_window, 'path_resolver') and self.main_window.path_resolver:
+                    self.captions_dir = self.main_window.path_resolver.get_captions_directory()
                 else:
-                    # Fallback: try to find from dataset path
-                    if hasattr(self.main_window, 'get_effective_dataset_path'):
-                        self.dataset_path = self.main_window.get_effective_dataset_path()
-                    if self.dataset_path:
-                        dataset_path = Path(self.dataset_path)
-                        # Check cropped_images variants
-                        for variant in dataset_path.glob("cropped_images*"):
-                            if variant.is_dir() and (variant / "captions").exists():
-                                self.captions_dir = variant / "captions"
-                                break
-                        # Fallback to direct captions folder
-                        if not self.captions_dir and (dataset_path / "captions").exists():
-                            self.captions_dir = dataset_path / "captions"
+                    # Fallback: captions are in a "captions" subfolder of where the image is
+                    image_parent = img_path.parent
+                    potential_captions_dir = image_parent / "captions"
+                    if potential_captions_dir.exists():
+                        self.captions_dir = potential_captions_dir
 
             if not self.captions_dir:
                 return

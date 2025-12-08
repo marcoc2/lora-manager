@@ -127,13 +127,14 @@ class DatasetManagerGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Dataset Manager Pro")
         self.setGeometry(100, 100, 1400, 900)
-        
+
         # Apply Dark Theme
         self.setStyleSheet(DARK_STYLESHEET)
-        
+
         self.dataset_path = None
         self.active_artifact_path = None
-        
+        self.path_resolver = None  # Set by MainController
+
         self.init_ui()
 
     def get_effective_dataset_path(self):
@@ -197,6 +198,8 @@ class DatasetManagerGUI(QMainWindow):
             self.artifact_selected.emit(folder_name)
 
     def process_images(self):
+        path = self.get_effective_dataset_path()
+        print(f"DEBUG: Process Image clicked. Input path: {path}")
         config = {
             'target_size': (self.dataset_view.crop_width.value(), self.dataset_view.crop_height.value()),
             'use_face_detection': self.dataset_view.face_detection.isChecked()

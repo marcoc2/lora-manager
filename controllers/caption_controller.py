@@ -24,13 +24,14 @@ class CaptionController(QObject):
         self.worker: Optional[CaptionWorker] = None
         self.current_config: Dict = {}
 
-    def start_caption_generation(self, config: Dict, dataset_path: Path):
+    def start_caption_generation(self, config: Dict, images_dir: Path, captions_dir: Path):
         """
         Main entry point - starts background caption generation.
 
         Args:
             config: Configuration dictionary from CaptionConfigDialog
-            dataset_path: Path to dataset folder
+            images_dir: Pre-resolved path to directory containing images
+            captions_dir: Pre-resolved path where captions should be saved
         """
         # 1. Validate config
         errors = self.validate_config(config)
@@ -39,29 +40,28 @@ class CaptionController(QObject):
             return
 
         try:
+            images_dir = Path(images_dir)
+            captions_dir = Path(captions_dir)
+
             print(f"[CONTROLLER] Starting caption generation with config: {config}")
-            print(f"[CONTROLLER] Dataset path: {dataset_path}")
+            print(f"[CONTROLLER] Images dir: {images_dir}")
+            print(f"[CONTROLLER] Captions dir: {captions_dir}")
 
             # 2. Get appropriate generator
             generator = self.get_generator(config['method'], config)
             print(f"[CONTROLLER] Generator created: {type(generator).__name__}")
 
-            # 3. Determine paths
-            images_dir, captions_dir = self._get_paths(dataset_path)
-            print(f"[CONTROLLER] Images dir: {images_dir}")
-            print(f"[CONTROLLER] Captions dir: {captions_dir}")
-
-            # 4. Check if images directory exists and has images
+            # 3. Check if images directory exists
             if not images_dir.exists():
                 print(f"[CONTROLLER] ERROR: Images directory does not exist: {images_dir}")
                 self.error_occurred.emit("", f"Diretório de imagens não encontrado: {images_dir}")
                 return
 
-            # 5. Create worker
+            # 4. Create worker with pre-resolved paths
             print(f"[CONTROLLER] Creating worker...")
             self.worker = CaptionWorker(generator, images_dir, captions_dir, config)
 
-            # 6. Connect signals
+            # 5. Connect signals
             print(f"[CONTROLLER] Connecting worker signals...")
             self.worker.caption_ready.connect(self.caption_generated)
             self.worker.progress.connect(self.progress_updated)
@@ -69,7 +69,7 @@ class CaptionController(QObject):
             self.worker.error.connect(self.error_occurred)
             print(f"[CONTROLLER] Worker signals connected")
 
-            # 7. Start processing
+            # 6. Start processing
             print(f"[CONTROLLER] Starting worker thread...")
             self.worker.start()
             print(f"[CONTROLLER] Worker thread started")
@@ -159,48 +159,6 @@ class CaptionController(QObject):
             errors.append("Tipo de modelo Danbooru é obrigatório")
 
         return errors
-
-    def _get_paths(self, dataset_path: Path):
-        """
-        Determine images directory and captions directory.
-        Captions are ALWAYS placed inside the images directory.
-
-        Args:
-            dataset_path: Base dataset path
-
-        Returns:
-            Tuple of (images_dir, captions_dir)
-        """
-        dataset_path = Path(dataset_path)
-
-        # Helper to check if directory has images
-        def has_images(path: Path) -> bool:
-            if not path.exists():
-                return False
-            for ext in ('*.jpg', '*.jpeg', '*.png', '*.webp'):
-                if list(path.glob(ext)):
-                    return True
-            return False
-
-        # Case 1: dataset_path itself contains images (artifact folder selected directly)
-        if has_images(dataset_path):
-            images_dir = dataset_path
-            captions_dir = dataset_path / "captions"
-            return images_dir, captions_dir
-
-        # Case 2: Check for cropped_images variants (cropped_images, cropped_images_512x512, etc.)
-        cropped_variants = list(dataset_path.glob("cropped_images*"))
-        for variant in cropped_variants:
-            if variant.is_dir() and has_images(variant):
-                images_dir = variant
-                captions_dir = variant / "captions"
-                return images_dir, captions_dir
-
-        # Case 3: Fallback - use dataset_path
-        images_dir = dataset_path
-        captions_dir = dataset_path / "captions"
-
-        return images_dir, captions_dir
 
     def _on_worker_finished(self, processed: int, failed: int):
         """

@@ -17,14 +17,20 @@ from models.danbooru_generator import DanbooruGenerator
 from models.janus_generator import JanusGenerator
 from controllers.caption_controller import CaptionController
 from training_widgets import CommandOutputDialog
+from services.path_resolver import PathResolver
+
 
 class MainController(QObject):
     def __init__(self, view: DatasetManagerGUI):
         super().__init__()
         self.view = view
         self.dataset_path = None
+        self.path_resolver = PathResolver()  # Centralized path resolution
         self.image_processor = ImageProcessor()
         self.caption_controller = CaptionController(self)
+
+        # Share path_resolver with view
+        self.view.path_resolver = self.path_resolver
 
         self.connect_signals()
 
@@ -45,8 +51,9 @@ class MainController(QObject):
         folder = QFileDialog.getExistingDirectory(self.view, "Select Dataset Folder")
         if folder:
             self.dataset_path = Path(folder).absolute()
-            self.view.dataset_path = self.dataset_path # Update view
-            self.view.active_artifact_path = None # Reset artifact
+            self.path_resolver.set_dataset_path(self.dataset_path)  # Update resolver
+            self.view.dataset_path = self.dataset_path  # Update view
+            self.view.active_artifact_path = None  # Reset artifact
             self.view.populate_image_grid(self.dataset_path)
             self.scan_artifacts()
             self.update_status()
@@ -55,21 +62,15 @@ class MainController(QObject):
         """Scans for cropped_images folders and populates the combo box"""
         if not self.dataset_path:
             return
-            
+
         self.view.dataset_view.artifact_combo.clear()
-        
-        # Find all folders containing "cropped_images"
-        artifacts = []
-        for item in self.dataset_path.iterdir():
-            if item.is_dir() and "cropped_images" in item.name:
-                artifacts.append(item.name)
-        
-        # Sort to have a consistent order
-        artifacts.sort()
-        
+
+        # Use path_resolver to find artifacts (already sorted alphabetically)
+        artifacts = self.path_resolver.find_artifact_folders()
+
         if artifacts:
             self.view.dataset_view.artifact_combo.addItems(artifacts)
-            # Select the most likely "active" one (e.g., just "cropped_images" or the last created)
+            # Select the most likely "active" one (e.g., just "cropped_images" or the first one)
             if "cropped_images" in artifacts:
                 self.view.dataset_view.artifact_combo.setCurrentText("cropped_images")
             else:
@@ -79,9 +80,11 @@ class MainController(QObject):
         """Loads and displays info from dataset.toml in the selected folder"""
         if not self.dataset_path:
             return
-            
-        artifact_path = self.dataset_path / folder_name
-        self.view.active_artifact_path = artifact_path # Update view
+
+        # Update path_resolver with selected artifact
+        self.path_resolver.set_active_artifact(folder_name)
+        artifact_path = self.path_resolver.active_artifact_path
+        self.view.active_artifact_path = artifact_path  # Update view
         toml_path = artifact_path / "dataset.toml"
         qwen_toml_path = artifact_path / "dataset_qwen.toml"
         
@@ -138,7 +141,7 @@ class MainController(QObject):
                 
             output_dir = self.dataset_path / folder_name
             
-            n_files = sum(1 for _ in input_dir.glob("*.[jp][pn][g]"))
+            n_files = sum(1 for f in input_dir.iterdir() if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.avif'])
             if n_files == 0:
                 self.view.show_warning("Warning", "No images found in the input directory!")
                 return
@@ -168,8 +171,10 @@ class MainController(QObject):
         Generate captions using the new CaptionController.
         Can be called with config (from view signal) or without (legacy support).
         """
-        if not self.dataset_path:
-            self.view.show_warning("Aviso", "Por favor, selecione uma pasta de dataset primeiro!")
+        # Validate using path_resolver
+        is_valid, error = self.path_resolver.validate_for_captioning()
+        if not is_valid:
+            self.view.show_warning("Aviso", error)
             return
 
         # If config not provided, show config dialog (legacy support)
@@ -180,6 +185,9 @@ class MainController(QObject):
             config = config_dialog.get_values()
 
         try:
+            # Get resolved paths from path_resolver
+            images_dir, captions_dir, _ = self.path_resolver.resolve_for_operation()
+
             # Create and show progress dialog
             progress_dialog = CaptionProgressDialog(self.view)
 
@@ -197,8 +205,8 @@ class MainController(QObject):
             progress_dialog.cancel_requested.connect(self.caption_controller.cancel_processing)
             progress_dialog.batch_edit_requested.connect(self.open_batch_caption_editor)
 
-            # Start caption generation in background
-            self.caption_controller.start_caption_generation(config, self.dataset_path)
+            # Start caption generation with resolved paths
+            self.caption_controller.start_caption_generation(config, images_dir, captions_dir)
 
             # Show progress dialog (blocks until complete or cancelled)
             progress_dialog.exec()
@@ -244,20 +252,23 @@ class MainController(QObject):
             self.view.show_critical("Erro", f"Erro ao abrir editor de captions: {str(e)}")
 
     def generate_all_toml(self):
-        if not self.dataset_path:
-            self.view.show_warning("Warning", "Please select a dataset folder first!")
+        # Validate using path_resolver
+        is_valid, error = self.path_resolver.validate_for_captioning()
+        if not is_valid:
+            self.view.show_warning("Warning", error)
             return
-        
+
         try:
             dialog = QwenTomlConfigDialog(self.view)
             if dialog.exec() == dialog.DialogCode.ACCEPTED:
                 config = dialog.get_values()
-                
-                if self.dataset_path.name == "cropped_images":
-                    cropped_dir = self.dataset_path
-                else:
-                    cropped_dir = self.dataset_path / "cropped_images"
-                    cropped_dir.mkdir(parents=True, exist_ok=True)
+
+                # Use path_resolver to get the correct directory
+                cropped_dir = self.path_resolver.get_toml_directory()
+                if not cropped_dir:
+                    self.view.show_warning("Warning", "Could not determine project directory!")
+                    return
+                cropped_dir.mkdir(parents=True, exist_ok=True)
                 
                 sdscripts_toml = {
                     "general": {
@@ -315,8 +326,10 @@ class MainController(QObject):
             self.view.show_critical("Error", f"Error generating dataset TOML files: {str(e)}")
 
     def rename_and_convert_images(self):
-        if not self.dataset_path:
-            self.view.show_warning("Warning", "Please select a dataset folder first!")
+        # Validate using path_resolver
+        is_valid, error = self.path_resolver.validate_for_captioning()
+        if not is_valid:
+            self.view.show_warning("Warning", error)
             return
 
         dialog = SuffixInputDialog(self.view)
@@ -327,9 +340,10 @@ class MainController(QObject):
             self.view.show_warning("Warning", "Suffix cannot be empty!")
             return
 
-        image_dir = self.dataset_path / "cropped_images"
-        if not image_dir.exists():
-            self.view.show_warning("Warning", "Cropped images directory does not exist!")
+        # Use path_resolver to get images directory
+        image_dir = self.path_resolver.get_images_directory()
+        if not image_dir or not image_dir.exists():
+            self.view.show_warning("Warning", "Images directory does not exist!")
             return
 
         image_files = list(image_dir.glob("*.[jp][pn][g]")) + list(image_dir.glob("*.webp"))
@@ -362,28 +376,37 @@ class MainController(QObject):
         if not self.dataset_path:
             self.view.show_warning("Warning", "Please select a dataset folder first!")
             return
-            
+
         try:
             stats = {
                 "total_images": 0,
                 "total_captions": 0,
                 "missing_captions": []
             }
-            
-            images_dir = self.dataset_path / "cropped_images"
-            if images_dir.exists():
-                stats["total_images"] = len(list(images_dir.glob("*.[jp][pn][g]")))
-            
-            captions_dir = images_dir / "captions"
-            if captions_dir.exists():
+
+            # Use path_resolver to get directories
+            images_dir = self.path_resolver.get_images_directory()
+            captions_dir = self.path_resolver.get_captions_directory()
+
+            if images_dir and images_dir.exists():
+                stats["total_images"] = self.path_resolver.count_images(images_dir)
+
+            if captions_dir and captions_dir.exists():
                 stats["total_captions"] = len(list(captions_dir.glob("*.txt")))
-                
-                for img_path in images_dir.glob("*.[jp][pn][g]"):
-                    caption_path = captions_dir / f"{img_path.stem}.txt"
-                    if not caption_path.exists():
-                        stats["missing_captions"].append(img_path.name)
-            
-            msg = f"""Dataset Analysis:\n\nTotal Images: {stats['total_images']}\nTotal Captions: {stats['total_captions']}\nMissing Captions: {len(stats['missing_captions'])}"""
+
+                if images_dir:
+                    for ext in ['.jpg', '.jpeg', '.png', '.webp', '.bmp']:
+                        for img_path in images_dir.glob(f"*{ext}"):
+                            caption_path = captions_dir / f"{img_path.stem}.txt"
+                            if not caption_path.exists():
+                                stats["missing_captions"].append(img_path.name)
+
+            msg = f"""Dataset Analysis:
+
+Images Directory: {images_dir}
+Total Images: {stats['total_images']}
+Total Captions: {stats['total_captions']}
+Missing Captions: {len(stats['missing_captions'])}"""
 
             if stats["missing_captions"]:
                 msg += "\n\nFiles missing captions:"
@@ -391,27 +414,29 @@ class MainController(QObject):
                     msg += f"\n- {file}"
                 if len(stats["missing_captions"]) > 10:
                     msg += f"\n... and {len(stats['missing_captions']) - 10} more"
-            
+
             self.view.show_message("Dataset Analysis", msg)
-        
+
         except Exception as e:
             self.view.show_critical("Error", f"Error analyzing dataset: {str(e)}")
 
     def update_status(self):
         if self.dataset_path:
             status_text = f"Dataset: {self.dataset_path}"
-            
-            cropped_path = self.dataset_path / "cropped_images"
-            captions_path = self.dataset_path / "cropped_images/captions"
-            
-            if cropped_path.exists():
-                n_images = len(list(cropped_path.glob("*.[jp][pn][g]")))
+
+            # Use path_resolver to get directories
+            images_dir = self.path_resolver.get_images_directory()
+            captions_dir = self.path_resolver.get_captions_directory()
+
+            if images_dir and images_dir.exists():
+                n_images = self.path_resolver.count_images(images_dir)
+                status_text += f"\nProject: {images_dir.name}"
                 status_text += f"\nImages: {n_images}"
-            
-            if captions_path.exists():
-                n_captions = len(list(captions_path.glob("*.txt")))
+
+            if captions_dir and captions_dir.exists():
+                n_captions = len(list(captions_dir.glob("*.txt")))
                 status_text += f"\nCaptions: {n_captions}"
-                
+
             self.view.update_status(status_text)
         else:
             self.view.update_status("No dataset selected")
