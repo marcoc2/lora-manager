@@ -351,8 +351,8 @@ class QueueManager(QWidget):
 
             worker = TrainingWorker(task)
             worker.task_progress.connect(self._handle_task_progress)
-            # Usar conexão direta em vez de lambda para evitar problemas de closure em threads
-            worker.task_completed.connect(self._on_worker_completed)
+            # Conexão com QueuedConnection para garantir que funcione entre threads
+            worker.task_completed.connect(self._on_worker_completed, Qt.ConnectionType.QueuedConnection)
             worker.task.command = cmd
             worker.start()
             self.workers.append(worker)
@@ -430,7 +430,7 @@ class QueueManager(QWidget):
             # Executar treinamento normalmente
             worker = TrainingWorker(task)
             worker.task_progress.connect(self._handle_task_progress)
-            worker.task_completed.connect(self._on_worker_completed)
+            worker.task_completed.connect(self._on_worker_completed, Qt.ConnectionType.QueuedConnection)
             worker.start()
             self.workers.append(worker)
             
@@ -625,7 +625,9 @@ class QueueManager(QWidget):
 
             # Kill all workers associated with current task
             for worker in self.workers[:]:
-                if worker.task == task or (hasattr(worker, 'task') and worker.task is None):
+                # Verifica se é um TrainingWorker com task (ignora PostProcessingWorker)
+                worker_task = getattr(worker, 'task', None)
+                if worker_task == task or (worker_task is None and isinstance(worker, TrainingWorker)):
                     try:
                         if hasattr(worker, 'process') and worker.process:
                             self.signal_append_log.emit("Terminating process...\n")
@@ -634,7 +636,8 @@ class QueueManager(QWidget):
                                 worker.process.wait(timeout=3)
                             except:
                                 worker.process.kill()
-                        worker.is_running = False
+                        if hasattr(worker, 'is_running'):
+                            worker.is_running = False
                         worker.quit()
                         worker.wait(2000)
                     except Exception as e:
@@ -716,9 +719,11 @@ class QueueManager(QWidget):
         """Handle progress updates from the worker"""
         self.signal_append_log.emit(line)
 
+    @pyqtSlot(bool)
     def _on_worker_completed(self, success):
         """Slot chamado quando um worker emite task_completed"""
         print(f"[QUEUE] _on_worker_completed called with success={success}")
+        self.signal_append_log.emit(f"[DEBUG] _on_worker_completed received: success={success}\n")
         # Encontrar o worker que emitiu o sinal
         sender_worker = self.sender()
         if sender_worker and hasattr(sender_worker, 'task') and sender_worker.task:
