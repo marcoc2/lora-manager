@@ -34,7 +34,8 @@ class TrainingTask:
         self.status = "Pending"  # Pending, Running, Completed, Failed
         self.created_at = datetime.now()
         self.start_time = None
-        
+        self.end_time = None
+
     def get_display_text(self):
         return f"[{self.status}] {self.output_name} ({self.created_at.strftime('%H:%M')})"
 
@@ -110,6 +111,7 @@ class PostProcessingWorker(QThread):
             # Configurar environment
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
+            env['PYTHONLEGACYWINDOWSSTDIO'] = '0'
             
             # Criar processo
             self.process = subprocess.Popen(
@@ -316,8 +318,12 @@ class QueueManager(QWidget):
             self.signal_append_log.emit(f"Starting training for: {task.output_name}\n")
             self.signal_append_log.emit(f"Command: {cmd}\n")
             self.signal_append_log.emit("="*50 + "\n")
-            
+
+            # Atualizar status para "Running" ANTES de iniciar o worker
+            task.status = "Running"
             task.start_time = datetime.now().timestamp()
+            self.signal_update_task.emit(task)  # Atualiza UI imediatamente
+
             worker = TrainingWorker(task)
             worker.task_progress.connect(self._handle_task_progress)
             worker.task_completed.connect(lambda success: self.task_finished(task, success))
@@ -634,30 +640,70 @@ class QueueManager(QWidget):
         """Handle progress updates from the worker"""
         self.signal_append_log.emit(line)
 
-    def task_finished(self, task, success):
-        """Handle task completion"""
-        if success:
-            task.status = "Completed"
-            self.signal_append_log.emit(f"\nTask completed successfully: {task.output_name}\n")
-            
-            # Post-processing (Video Generation)
-            self._handle_post_processing(task)
-            
-        else:
-            task.status = "Failed"
-            self.signal_append_log.emit(f"\nTask failed: {task.output_name}\n")
+    def _cleanup_memory(self):
+        """Limpa memória GPU e RAM entre tarefas"""
+        import gc
 
-        self.signal_update_task.emit(task)
-        
-        # Remove worker
-        for worker in self.workers:
+        # Força garbage collection
+        gc.collect()
+
+        # Limpa cache CUDA se disponível
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                self.signal_append_log.emit("CUDA cache cleared.\n")
+        except ImportError:
+            pass
+        except Exception as e:
+            self.signal_append_log.emit(f"Warning: Could not clear CUDA cache: {e}\n")
+
+    def _cleanup_worker(self, task):
+        """Remove worker da lista e limpa referências"""
+        for worker in self.workers[:]:  # Itera sobre cópia da lista
             if worker.task == task:
+                # Quebra referência circular
+                worker.task = None
+                try:
+                    worker.quit()
+                    worker.wait(2000)  # Espera até 2 segundos
+                except:
+                    pass
                 self.workers.remove(worker)
                 break
-        
+
+    def _finish_task_processing(self):
+        """Finaliza processamento após cooldown - libera fila para próxima tarefa"""
         self.current_task = None
         self.is_processing = False
         self.signal_append_log.emit("="*50 + "\n")
+        self.signal_append_log.emit("Ready for next task in queue.\n")
+
+    def task_finished(self, task, success):
+        """Handle task completion with proper cleanup and cooldown"""
+        # 1. Atualizar status
+        task.status = "Completed" if success else "Failed"
+        task.end_time = datetime.now().timestamp()
+        self.signal_update_task.emit(task)
+
+        # 2. Log
+        status_msg = "completed successfully" if success else "failed"
+        self.signal_append_log.emit(f"\nTask {status_msg}: {task.output_name}\n")
+
+        # 3. Remover worker corretamente
+        self._cleanup_worker(task)
+
+        # 4. Pós-processamento (video) - async
+        if success:
+            self._handle_post_processing(task)
+
+        # 5. Limpar memória GPU/RAM
+        self._cleanup_memory()
+
+        # 6. Cooldown de 5 segundos antes de liberar próxima tarefa
+        self.signal_append_log.emit("Aguardando 5 segundos para limpeza de memória...\n")
+        QTimer.singleShot(5000, self._finish_task_processing)
 
     def _handle_post_processing(self, task):
         """Handle post-processing steps like video generation"""
@@ -687,7 +733,7 @@ class QueueManager(QWidget):
 
                 # Primary: Use RIFE interpolation for smooth video
                 video_path = samples_dir / "training_preview.mp4"
-                rife_script = Path(os.getcwd()) / "interpolate_rife_torch.py"
+                rife_script = Path(__file__).parent / "interpolate_rife_torch.py"
 
                 if rife_script.exists():
                     self.signal_append_log.emit(f"Starting RIFE frame interpolation...\n")
@@ -733,7 +779,7 @@ class QueueManager(QWidget):
     def _create_simple_video(self, samples_dir, video_path):
         """Create a simple video without interpolation as fallback"""
         try:
-            video_gen_script = Path(os.getcwd()) / "video_generator.py"
+            video_gen_script = Path(__file__).parent / "video_generator.py"
             if video_gen_script.exists():
                 cmd = [
                     sys.executable,
