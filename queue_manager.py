@@ -51,12 +51,14 @@ class TrainingWorker(QThread):
 
     def run(self):
         try:
+            print(f"[WORKER] Starting worker for task: {self.task.output_name}")
             # Configurar environment para UTF-8
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
             env['PYTHONLEGACYWINDOWSSTDIO'] = '0'
-            
+
             # Criar processo
+            print(f"[WORKER] Creating subprocess...")
             self.process = subprocess.Popen(
                 self.task.command,
                 stdout=subprocess.PIPE,
@@ -69,20 +71,27 @@ class TrainingWorker(QThread):
                 errors='replace',
                 env=env
             )
-            
+            print(f"[WORKER] Subprocess started with PID: {self.process.pid}")
+
             # Ler saída em tempo real
             for line in self.process.stdout:
                 if not self.is_running:
+                    print(f"[WORKER] is_running=False, breaking loop")
                     break
                 line = line.strip()
                 if line:
                     self.task_progress.emit(line)
-            
+
+            print(f"[WORKER] Output loop finished, waiting for process...")
             self.process.wait()
             success = self.process.returncode == 0
+            print(f"[WORKER] Process finished with returncode={self.process.returncode}, success={success}")
+            print(f"[WORKER] Emitting task_completed signal...")
             self.task_completed.emit(success)
-            
+            print(f"[WORKER] task_completed signal emitted")
+
         except Exception as e:
+            print(f"[WORKER] Exception: {str(e)}")
             self.task_progress.emit(f"Error running task: {str(e)}")
             self.task_completed.emit(False)
 
@@ -202,6 +211,11 @@ class QueueManager(QWidget):
         # Control buttons
         button_layout = QHBoxLayout()
 
+        self.skip_current_btn = QPushButton("Skip Current")
+        self.skip_current_btn.clicked.connect(self.skip_current_task)
+        self.skip_current_btn.setStyleSheet("QPushButton { background-color: #FF9800; color: white; }")
+        self.skip_current_btn.setToolTip("Mata o processo atual e passa para o próximo da fila")
+
         self.clear_completed_btn = QPushButton("Clear Completed")
         self.clear_completed_btn.clicked.connect(self.clear_completed_tasks)
 
@@ -212,6 +226,7 @@ class QueueManager(QWidget):
         self.reset_queue_btn.clicked.connect(self.reset_queue)
         self.reset_queue_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; }")
 
+        button_layout.addWidget(self.skip_current_btn)
         button_layout.addWidget(self.clear_completed_btn)
         button_layout.addWidget(self.clear_all_btn)
         button_layout.addWidget(self.reset_queue_btn)
@@ -293,16 +308,26 @@ class QueueManager(QWidget):
     
     def process_queue(self):
         """Process tasks in the queue"""
+        print("[QUEUE] Queue processor thread started")
         while True:
+            print(f"[QUEUE] Loop - is_processing={self.is_processing}, current_task={self.current_task is not None}, queue_size={self.task_queue.qsize()}")
             if not self.is_processing and self.current_task is None:
+                print("[QUEUE] Ready to process next task...")
                 try:
                     task = self.task_queue.get(timeout=1)
+                    print(f"[QUEUE] Got task from queue: {task.output_name}")
                     self.current_task = task
                     self.is_processing = True
+                    print(f"[QUEUE] Executing task: {task.output_name}")
                     self.execute_task(task)
                 except queue.Empty:
                     pass
-            threading.Event().wait(1)  # Pequena pausa para não sobrecarregar a CPU
+            else:
+                if self.is_processing:
+                    print(f"[QUEUE] Waiting - task in progress")
+                if self.current_task:
+                    print(f"[QUEUE] Waiting - current_task: {self.current_task.output_name}, status: {self.current_task.status}")
+            threading.Event().wait(2)  # Aumentado para 2s para reduzir spam de log
     
     def execute_task(self, task):
         """Execute a single training task (com cache automático se necessário)"""
@@ -326,11 +351,12 @@ class QueueManager(QWidget):
 
             worker = TrainingWorker(task)
             worker.task_progress.connect(self._handle_task_progress)
-            worker.task_completed.connect(lambda success: self.task_finished(task, success))
+            # Usar conexão direta em vez de lambda para evitar problemas de closure em threads
+            worker.task_completed.connect(self._on_worker_completed)
             worker.task.command = cmd
             worker.start()
             self.workers.append(worker)
-            
+
         except Exception as e:
             error_msg = f"Error starting task: {str(e)}"
             self.signal_append_log.emit(f"\nError starting task: {error_msg}\n")
@@ -404,7 +430,7 @@ class QueueManager(QWidget):
             # Executar treinamento normalmente
             worker = TrainingWorker(task)
             worker.task_progress.connect(self._handle_task_progress)
-            worker.task_completed.connect(lambda success: self.task_finished(task, success))
+            worker.task_completed.connect(self._on_worker_completed)
             worker.start()
             self.workers.append(worker)
             
@@ -580,6 +606,56 @@ class QueueManager(QWidget):
         self.preview_status.setText("Monitoring for new samples...")
         self.preview_status.setStyleSheet("color: #2196F3; font-size: 10px;")
 
+    def skip_current_task(self):
+        """Skip the current running task and move to the next one in queue"""
+        if not self.current_task or not self.is_processing:
+            self.signal_append_log.emit("No task currently running to skip.\n")
+            return
+
+        reply = QMessageBox.question(
+            self, "Skip Current Task",
+            f"Matar o processo '{self.current_task.output_name}' e passar para o próximo?\n\n"
+            "Os pesos intermediários salvos serão preservados.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            task = self.current_task
+            self.signal_append_log.emit(f"\n>>> Skipping task: {task.output_name}\n")
+
+            # Kill all workers associated with current task
+            for worker in self.workers[:]:
+                if worker.task == task or (hasattr(worker, 'task') and worker.task is None):
+                    try:
+                        if hasattr(worker, 'process') and worker.process:
+                            self.signal_append_log.emit("Terminating process...\n")
+                            worker.process.terminate()
+                            try:
+                                worker.process.wait(timeout=3)
+                            except:
+                                worker.process.kill()
+                        worker.is_running = False
+                        worker.quit()
+                        worker.wait(2000)
+                    except Exception as e:
+                        self.signal_append_log.emit(f"Warning during termination: {e}\n")
+                    try:
+                        self.workers.remove(worker)
+                    except:
+                        pass
+
+            # Update task status
+            task.status = "Skipped"
+            task.end_time = datetime.now().timestamp()
+            self.signal_update_task.emit(task)
+
+            self.signal_append_log.emit(f"Task skipped: {task.output_name}\n")
+
+            # Cleanup and proceed to next
+            self._cleanup_memory()
+            self.signal_append_log.emit("Aguardando 3 segundos antes do próximo...\n")
+            self._delayed_finish_task(3)
+
     def reset_queue(self):
         """Reset the entire queue system (emergency reset)"""
         from PyQt6.QtWidgets import QMessageBox
@@ -640,6 +716,22 @@ class QueueManager(QWidget):
         """Handle progress updates from the worker"""
         self.signal_append_log.emit(line)
 
+    def _on_worker_completed(self, success):
+        """Slot chamado quando um worker emite task_completed"""
+        print(f"[QUEUE] _on_worker_completed called with success={success}")
+        # Encontrar o worker que emitiu o sinal
+        sender_worker = self.sender()
+        if sender_worker and hasattr(sender_worker, 'task') and sender_worker.task:
+            task = sender_worker.task
+            print(f"[QUEUE] Found task from sender: {task.output_name}")
+            self.task_finished(task, success)
+        elif self.current_task:
+            # Fallback: usar current_task se não conseguir identificar o sender
+            print(f"[QUEUE] Using current_task as fallback: {self.current_task.output_name}")
+            self.task_finished(self.current_task, success)
+        else:
+            print(f"[QUEUE] ERROR: Could not identify task for completed worker!")
+
     def _cleanup_memory(self):
         """Limpa memória GPU e RAM entre tarefas"""
         import gc
@@ -675,35 +767,58 @@ class QueueManager(QWidget):
 
     def _finish_task_processing(self):
         """Finaliza processamento após cooldown - libera fila para próxima tarefa"""
+        print(f"[QUEUE] _finish_task_processing called - BEFORE: is_processing={self.is_processing}, current_task={self.current_task is not None}")
         self.current_task = None
         self.is_processing = False
+        print(f"[QUEUE] _finish_task_processing - AFTER: is_processing={self.is_processing}, current_task={self.current_task is not None}")
         self.signal_append_log.emit("="*50 + "\n")
         self.signal_append_log.emit("Ready for next task in queue.\n")
 
+    def _delayed_finish_task(self, delay_seconds=5):
+        """Executa cooldown em thread separada e libera a fila"""
+        print(f"[QUEUE] _delayed_finish_task called with delay={delay_seconds}s")
+        def do_finish():
+            print(f"[QUEUE] Cooldown thread started, sleeping {delay_seconds}s...")
+            time.sleep(delay_seconds)
+            print(f"[QUEUE] Cooldown finished, calling _finish_task_processing...")
+            self._finish_task_processing()
+
+        finish_thread = threading.Thread(target=do_finish, daemon=True)
+        finish_thread.start()
+        print(f"[QUEUE] Cooldown thread started")
+
     def task_finished(self, task, success):
         """Handle task completion with proper cleanup and cooldown"""
+        print(f"[QUEUE] task_finished called - task={task.output_name}, success={success}")
+
         # 1. Atualizar status
         task.status = "Completed" if success else "Failed"
         task.end_time = datetime.now().timestamp()
         self.signal_update_task.emit(task)
+        print(f"[QUEUE] Task status updated to: {task.status}")
 
         # 2. Log
         status_msg = "completed successfully" if success else "failed"
         self.signal_append_log.emit(f"\nTask {status_msg}: {task.output_name}\n")
 
         # 3. Remover worker corretamente
+        print(f"[QUEUE] Cleaning up worker...")
         self._cleanup_worker(task)
 
         # 4. Pós-processamento (video) - async
         if success:
+            print(f"[QUEUE] Starting post-processing...")
             self._handle_post_processing(task)
 
         # 5. Limpar memória GPU/RAM
+        print(f"[QUEUE] Cleaning up memory...")
         self._cleanup_memory()
 
         # 6. Cooldown de 5 segundos antes de liberar próxima tarefa
+        # Usa threading.Thread em vez de QTimer porque process_queue() roda em thread regular
         self.signal_append_log.emit("Aguardando 5 segundos para limpeza de memória...\n")
-        QTimer.singleShot(5000, self._finish_task_processing)
+        print(f"[QUEUE] Starting cooldown...")
+        self._delayed_finish_task(5)
 
     def _handle_post_processing(self, task):
         """Handle post-processing steps like video generation"""

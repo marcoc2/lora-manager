@@ -128,9 +128,14 @@ def interpolate_video(input_folder, output_file, multiplier=8, fps=24):
 
         # Use robust video generator instead of cv2
         print("Creating video with robust generator...")
+        print(f"DEBUG: Frame array count: {len(frame_arrays)}")
+        if frame_arrays:
+            print(f"DEBUG: First frame shape: {frame_arrays[0].shape}, dtype: {frame_arrays[0].dtype}")
+
         from video_generator import create_video_from_arrays
 
         output_path = Path(output_file)
+        print(f"DEBUG: Calling create_video_from_arrays with output: {output_path}, fps: {fps}")
         result = create_video_from_arrays(frame_arrays, output_path, fps)
 
         if result:

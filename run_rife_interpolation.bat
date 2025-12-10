@@ -25,6 +25,13 @@ if exist "%~dp0%SCRIPT_NAME%" (
 echo Usando script: %SCRIPT_PATH%
 echo.
 
-"%VENV_PYTHON%" "%SCRIPT_PATH%"
+:: Use current directory as input, or argument if provided
+if "%~1"=="" (
+    set "INPUT_FOLDER=%CD%"
+) else (
+    set "INPUT_FOLDER=%~1"
+)
+
+"%VENV_PYTHON%" "%SCRIPT_PATH%" --input "%INPUT_FOLDER%" --output "video_rife_torch.mp4" --multiplier 16 --fps 16
 
 pause

@@ -20,7 +20,7 @@ def ensure_dependencies():
             subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
 
 # Ensure dependencies on import
-ensure_dependencies()
+#ensure_dependencies()
 
 import imageio
 from PIL import Image
@@ -65,6 +65,9 @@ def create_video_imageio(
     This is the most reliable method on Windows.
     """
     try:
+        print(f"DEBUG: Initializing imageio writer at {output_path}")
+        print(f"DEBUG: Params: fps={fps}, codec={codec}, quality={quality}")
+        
         # imageio-ffmpeg downloads its own FFmpeg binary
         writer = imageio.get_writer(
             str(output_path),
@@ -75,20 +78,29 @@ def create_video_imageio(
             macro_block_size=8,  # Ensure dimensions are compatible
         )
 
-        for frame in images:
+        print(f"DEBUG: Writer initialized. Appending {len(images)} frames...")
+        for i, frame in enumerate(images):
+            if i % 10 == 0:
+                 print(f"DEBUG: Appending frame {i}/{len(images)}")
             writer.append_data(frame)
 
         writer.close()
+        print("DEBUG: Writer closed.")
 
         # Verify file was created and has content
         if output_path.exists() and output_path.stat().st_size > 1000:
+            print(f"DEBUG: Success! File size: {output_path.stat().st_size} bytes")
             return True
         else:
-            print("Warning: imageio created empty or very small file")
+            print(f"Warning: imageio created empty or very small file. Exists: {output_path.exists()}")
+            if output_path.exists():
+                print(f"Size: {output_path.stat().st_size} bytes")
             return False
 
     except Exception as e:
         print(f"imageio-ffmpeg failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -119,6 +131,7 @@ def create_video_ffmpeg_direct(
         # Create temporary file list for ffmpeg
         images = get_image_files(image_folder)
         if not images:
+            print("DEBUG: No images found for direct FFmpeg.")
             return False
 
         # Use concat demuxer for arbitrary filenames
@@ -141,19 +154,25 @@ def create_video_ffmpeg_direct(
             str(output_path)
         ]
 
+        print(f"DEBUG: Running FFmpeg command: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, timeout=300)
 
         # Clean up temp file
         list_file.unlink(missing_ok=True)
 
         if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 1000:
+            print(f"DEBUG: FFmpeg Success! File size: {output_path.stat().st_size} bytes")
             return True
         else:
-            print(f"FFmpeg error: {result.stderr.decode()}")
+            print(f"DEBUG: FFmpeg error code: {result.returncode}")
+            print(f"DEBUG: FFmpeg stdout: {result.stdout.decode()}")
+            print(f"DEBUG: FFmpeg stderr: {result.stderr.decode()}")
             return False
 
     except Exception as e:
         print(f"Direct FFmpeg failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
