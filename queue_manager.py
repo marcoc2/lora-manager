@@ -37,7 +37,14 @@ class TrainingTask:
         self.end_time = None
 
     def get_display_text(self):
-        return f"[{self.status}] {self.output_name} ({self.created_at.strftime('%H:%M')})"
+        status_emojis = {
+            "Pending": "⏳",
+            "Running": "🚀",
+            "Completed": "✅",
+            "Failed": "❌"
+        }
+        emoji = status_emojis.get(self.status, "❓")
+        return f"{emoji} [{self.status}] {self.output_name} ({self.created_at.strftime('%H:%M')})"
 
 class TrainingWorker(QThread):
     task_completed = pyqtSignal(bool)
@@ -340,7 +347,7 @@ class QueueManager(QWidget):
             self._setup_preview_for_task(cmd)
 
             self.signal_clear_log.emit()
-            self.signal_append_log.emit(f"Starting training for: {task.output_name}\n")
+            self.signal_append_log.emit(f"🚀 Starting training for: {task.output_name}\n")
             self.signal_append_log.emit(f"Command: {cmd}\n")
             self.signal_append_log.emit("="*50 + "\n")
 
@@ -621,7 +628,7 @@ class QueueManager(QWidget):
 
         if reply == QMessageBox.StandardButton.Yes:
             task = self.current_task
-            self.signal_append_log.emit(f"\n>>> Skipping task: {task.output_name}\n")
+            self.signal_append_log.emit(f"\n⏭️ Skipping task: {task.output_name}\n")
 
             # Kill all workers associated with current task
             for worker in self.workers[:]:
@@ -652,7 +659,7 @@ class QueueManager(QWidget):
             task.end_time = datetime.now().timestamp()
             self.signal_update_task.emit(task)
 
-            self.signal_append_log.emit(f"Task skipped: {task.output_name}\n")
+            self.signal_append_log.emit(f"\n⏭️ Task skipped: {task.output_name}\n")
 
             # Cleanup and proceed to next
             self._cleanup_memory()
@@ -759,7 +766,8 @@ class QueueManager(QWidget):
     def _cleanup_worker(self, task):
         """Remove worker da lista e limpa referências"""
         for worker in self.workers[:]:  # Itera sobre cópia da lista
-            if worker.task == task:
+            worker_task = getattr(worker, 'task', None)
+            if worker_task == task:
                 # Quebra referência circular
                 worker.task = None
                 try:
@@ -804,7 +812,8 @@ class QueueManager(QWidget):
 
         # 2. Log
         status_msg = "completed successfully" if success else "failed"
-        self.signal_append_log.emit(f"\nTask {status_msg}: {task.output_name}\n")
+        emoji = "✅" if success else "❌"
+        self.signal_append_log.emit(f"\n{emoji} Task {status_msg}: {task.output_name}\n")
 
         # 3. Remover worker corretamente
         print(f"[QUEUE] Cleaning up worker...")
