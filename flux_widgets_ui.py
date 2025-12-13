@@ -1,77 +1,213 @@
-from PyQt6.QtWidgets import (QHBoxLayout, QGroupBox, QFormLayout, QLineEdit, 
-                           QPushButton, QCheckBox, QFileDialog, QLabel, QComboBox,
-                           QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                            QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox,
+                            QCheckBox, QComboBox, QGroupBox, QFileDialog, QTextEdit,
+                            QScrollArea, QFrame, QFormLayout)
 from PyQt6.QtCore import Qt
+import json
 from pathlib import Path
-from flux_widgets_base import FluxTrainingWidgetsBase, NoWheelSpinBox, save_config
 
-class FluxTrainingWidgets(FluxTrainingWidgetsBase):
+CONFIG_FILE = "flux_config.json"
+
+def save_config(config, filename=CONFIG_FILE):
+    try:
+        with open(filename, 'w') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print(f"Error saving config: {e}")
+
+def load_config(filename=CONFIG_FILE):
+    try:
+        if Path(filename).exists():
+            with open(filename, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading config: {e}")
+    return {}
+
+class NoWheelSpinBox(QSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+class FluxTrainingWidgets(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.parent = parent
         self.init_ui()
+        self.load_saved_config()
 
     def init_ui(self):
-        layout = self.control_layout
-        layout.setSpacing(10)
+        main_layout = QVBoxLayout()
 
-        # --- Essential Settings ---
+        # Scroll Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        # Base Models
-        model_group = QGroupBox("Base Models")
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+
+        # --- Model Configuration ---
+        model_group = QGroupBox("Model Configuration")
         model_layout = QVBoxLayout()
-        
-        # Flux model
-        flux_layout = QHBoxLayout()
-        self.flux_path = QLineEdit()
-        self.flux_path.setPlaceholderText("Path to Flux model")
-        self.flux_path.setText(self.config.get("flux_path", ""))
-        select_flux = QPushButton("Browse")
-        select_flux.clicked.connect(self.select_flux_path)
-        flux_layout.addWidget(self.flux_path)
-        flux_layout.addWidget(select_flux)
-        model_layout.addWidget(QLabel("Flux Model:"))
-        model_layout.addLayout(flux_layout)
 
-        # CLIP-L model
-        clip_layout = QHBoxLayout()
-        self.clip_l_path = QLineEdit()
-        self.clip_l_path.setPlaceholderText("Path to CLIP-L model")
-        self.clip_l_path.setText(self.config.get("clip_l_path", ""))
-        select_clip = QPushButton("Browse")
-        select_clip.clicked.connect(self.select_clip_path)
-        clip_layout.addWidget(self.clip_l_path)
-        clip_layout.addWidget(select_clip)
-        model_layout.addWidget(QLabel("CLIP-L Model:"))
-        model_layout.addLayout(clip_layout)
+        # Model Path (HuggingFace ID or local)
+        model_path_layout = QHBoxLayout()
+        self.model_path = QLineEdit()
+        self.model_path.setPlaceholderText("HuggingFace ID or local path to Flux model")
+        self.model_path.setText("black-forest-labs/FLUX.1-dev")
+        btn_model = QPushButton("Select Local")
+        btn_model.clicked.connect(lambda: self.select_path(self.model_path, is_file=True))
+        model_path_layout.addWidget(QLabel("Model:"))
+        model_path_layout.addWidget(self.model_path)
+        model_path_layout.addWidget(btn_model)
+        model_layout.addLayout(model_path_layout)
 
-        # T5XXL model
-        t5_layout = QHBoxLayout()
-        self.t5xxl_path = QLineEdit()
-        self.t5xxl_path.setPlaceholderText("Path to T5XXL model")
-        self.t5xxl_path.setText(self.config.get("t5xxl_path", ""))
-        select_t5 = QPushButton("Browse")
-        select_t5.clicked.connect(self.select_t5_path)
-        t5_layout.addWidget(self.t5xxl_path)
-        t5_layout.addWidget(select_t5)
-        model_layout.addWidget(QLabel("T5XXL Model:"))
-        model_layout.addLayout(t5_layout)
+        # Quantize and Low VRAM options
+        options_layout = QHBoxLayout()
+        self.quantize = QCheckBox("Quantize (8bit)")
+        self.quantize.setChecked(True)
+        self.quantize.setToolTip("Enable 8-bit quantization for lower VRAM usage")
+        options_layout.addWidget(self.quantize)
 
-        # AE model
-        ae_layout = QHBoxLayout()
-        self.ae_path = QLineEdit()
-        self.ae_path.setPlaceholderText("Path to AutoEncoder model")
-        self.ae_path.setText(self.config.get("ae_path", ""))
-        select_ae = QPushButton("Browse")
-        select_ae.clicked.connect(self.select_ae_path)
-        ae_layout.addWidget(self.ae_path)
-        ae_layout.addWidget(select_ae)
-        model_layout.addWidget(QLabel("AutoEncoder Model:"))
-        model_layout.addLayout(ae_layout)
-        
+        self.low_vram = QCheckBox("Low VRAM Mode")
+        self.low_vram.setChecked(False)
+        self.low_vram.setToolTip("Enable if GPU is connected to monitor (slower but uses less VRAM)")
+        options_layout.addWidget(self.low_vram)
+        options_layout.addStretch()
+        model_layout.addLayout(options_layout)
+
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
 
-        # Output Configuration
+        # --- Training Parameters ---
+        params_group = QGroupBox("Training Parameters")
+        params_layout = QVBoxLayout()
+
+        # Grid for basic params
+        grid_layout = QHBoxLayout()
+
+        # Steps
+        steps_layout = QVBoxLayout()
+        self.steps = NoWheelSpinBox()
+        self.steps.setRange(100, 100000)
+        self.steps.setValue(2000)
+        steps_layout.addWidget(QLabel("Training Steps:"))
+        steps_layout.addWidget(self.steps)
+        grid_layout.addLayout(steps_layout)
+
+        # Batch Size
+        batch_layout = QVBoxLayout()
+        self.batch_size = NoWheelSpinBox()
+        self.batch_size.setRange(1, 64)
+        self.batch_size.setValue(1)
+        batch_layout.addWidget(QLabel("Batch Size:"))
+        batch_layout.addWidget(self.batch_size)
+        grid_layout.addLayout(batch_layout)
+
+        # Learning Rate
+        lr_layout = QVBoxLayout()
+        self.learning_rate = QLineEdit()
+        self.learning_rate.setText("1e-4")
+        lr_layout.addWidget(QLabel("Learning Rate:"))
+        lr_layout.addWidget(self.learning_rate)
+        grid_layout.addLayout(lr_layout)
+
+        # Seed
+        seed_layout = QVBoxLayout()
+        self.seed = NoWheelSpinBox()
+        self.seed.setRange(1, 999999)
+        self.seed.setValue(42)
+        seed_layout.addWidget(QLabel("Seed:"))
+        seed_layout.addWidget(self.seed)
+        grid_layout.addLayout(seed_layout)
+
+        params_layout.addLayout(grid_layout)
+
+        # LoRA Config
+        lora_layout = QHBoxLayout()
+
+        self.network_dim = NoWheelSpinBox()
+        self.network_dim.setRange(1, 256)
+        self.network_dim.setValue(16)
+        lora_layout.addWidget(QLabel("LoRA Rank:"))
+        lora_layout.addWidget(self.network_dim)
+
+        self.network_alpha = NoWheelSpinBox()
+        self.network_alpha.setRange(1, 256)
+        self.network_alpha.setValue(16)
+        lora_layout.addWidget(QLabel("LoRA Alpha:"))
+        lora_layout.addWidget(self.network_alpha)
+
+        params_layout.addLayout(lora_layout)
+
+        # Resolution (multi-select style display)
+        res_layout = QHBoxLayout()
+        res_layout.addWidget(QLabel("Resolution:"))
+        self.res_512 = QCheckBox("512")
+        self.res_512.setChecked(True)
+        self.res_768 = QCheckBox("768")
+        self.res_768.setChecked(True)
+        self.res_1024 = QCheckBox("1024")
+        self.res_1024.setChecked(True)
+        res_layout.addWidget(self.res_512)
+        res_layout.addWidget(self.res_768)
+        res_layout.addWidget(self.res_1024)
+        res_layout.addStretch()
+        params_layout.addLayout(res_layout)
+
+        # Optimizer and EMA
+        opt_layout = QHBoxLayout()
+        opt_layout.addWidget(QLabel("Optimizer:"))
+        self.optimizer = QComboBox()
+        self.optimizer.addItems(["adamw8bit", "adamw", "prodigy"])
+        self.optimizer.setCurrentText("adamw8bit")
+        opt_layout.addWidget(self.optimizer)
+
+        self.use_ema = QCheckBox("Use EMA")
+        self.use_ema.setChecked(True)
+        self.use_ema.setToolTip("Smooths learning, recommended to leave on")
+        opt_layout.addWidget(self.use_ema)
+
+        opt_layout.addWidget(QLabel("EMA Decay:"))
+        self.ema_decay = NoWheelDoubleSpinBox()
+        self.ema_decay.setRange(0.9, 0.9999)
+        self.ema_decay.setDecimals(4)
+        self.ema_decay.setSingleStep(0.001)
+        self.ema_decay.setValue(0.99)
+        opt_layout.addWidget(self.ema_decay)
+        opt_layout.addStretch()
+        params_layout.addLayout(opt_layout)
+
+        # Precision
+        prec_layout = QHBoxLayout()
+        prec_layout.addWidget(QLabel("Train Precision:"))
+        self.mixed_precision = QComboBox()
+        self.mixed_precision.addItems(["bf16", "fp16"])
+        self.mixed_precision.setCurrentText("bf16")
+        prec_layout.addWidget(self.mixed_precision)
+
+        prec_layout.addWidget(QLabel("Save Precision:"))
+        self.save_precision = QComboBox()
+        self.save_precision.addItems(["float16", "bf16"])
+        self.save_precision.setCurrentText("float16")
+        prec_layout.addWidget(self.save_precision)
+        prec_layout.addStretch()
+        params_layout.addLayout(prec_layout)
+
+        # Cache option
+        self.cache_latents = QCheckBox("Cache latents to disk")
+        self.cache_latents.setChecked(True)
+        self.cache_latents.setToolTip("Recommended: caches latents to disk for faster training")
+        params_layout.addWidget(self.cache_latents)
+
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
+
+        # --- Output Configuration ---
         output_group = QGroupBox("Output Configuration")
         output_layout = QVBoxLayout()
 
@@ -79,368 +215,309 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
         output_dir_layout = QHBoxLayout()
         self.output_dir = QLineEdit()
         self.output_dir.setPlaceholderText("Output directory")
-        self.output_dir.setText(self.config.get("output_dir", ""))
-        select_output = QPushButton("Browse")
-        select_output.clicked.connect(self.select_output_path)
+        self.output_dir.setText("output")
+        btn_output_dir = QPushButton("Browse")
+        btn_output_dir.clicked.connect(lambda: self.select_path(self.output_dir, is_file=False))
         output_dir_layout.addWidget(self.output_dir)
-        output_dir_layout.addWidget(select_output)
-
-        # Output Name
-        self.output_name = QLineEdit()
-        self.output_name.setPlaceholderText("Output model name (without extension)")
-        self.output_name.setText(self.config.get("output_name", ""))
+        output_dir_layout.addWidget(btn_output_dir)
 
         output_layout.addWidget(QLabel("Output Directory:"))
         output_layout.addLayout(output_dir_layout)
-        output_layout.addWidget(QLabel("Output Name:"))
-        output_layout.addWidget(self.output_name)
+
+        # Output Name
+        name_layout = QHBoxLayout()
+        self.output_name = QLineEdit()
+        self.output_name.setPlaceholderText("my_flux_lora")
+        name_layout.addWidget(QLabel("Output Name:"))
+        name_layout.addWidget(self.output_name)
+        output_layout.addLayout(name_layout)
+
+        # Save Every
+        save_layout = QHBoxLayout()
+        self.save_every = NoWheelSpinBox()
+        self.save_every.setRange(1, 10000)
+        self.save_every.setValue(250)
+        save_layout.addWidget(QLabel("Save Every (Steps):"))
+        save_layout.addWidget(self.save_every)
+        output_layout.addLayout(save_layout)
 
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
 
-        # Network Configuration
-        network_group = QGroupBox("Network Configuration")
-        network_layout = QFormLayout()
+        # --- Sample Prompts & Preview ---
+        sample_group = QGroupBox("Sample Prompts & Preview")
+        sample_layout = QVBoxLayout()
 
-        self.network_dim = NoWheelSpinBox()
-        self.network_dim.setRange(1, 128)
-        self.network_dim.setValue(self.config.get("network_dim", 32))
-        network_layout.addRow("Network Dimension:", self.network_dim)
+        # Enable sampling checkbox
+        self.enable_sampling = QCheckBox("Enable preview generation during training")
+        self.enable_sampling.setChecked(True)
+        self.enable_sampling.stateChanged.connect(self.on_sampling_toggled)
+        sample_layout.addWidget(self.enable_sampling)
 
-        self.network_alpha = NoWheelSpinBox()
-        self.network_alpha.setRange(1, 128)
-        self.network_alpha.setValue(self.config.get("network_alpha", 16))
-        network_layout.addRow("Network Alpha:", self.network_alpha)
+        # Sample Every
+        sample_every_layout = QHBoxLayout()
+        self.sample_every = NoWheelSpinBox()
+        self.sample_every.setRange(1, 10000)
+        self.sample_every.setValue(250)
+        sample_every_layout.addWidget(QLabel("Sample Every (Steps):"))
+        sample_every_layout.addWidget(self.sample_every)
+        sample_layout.addLayout(sample_every_layout)
 
-        self.network_args = QLineEdit(self.config.get("network_args", "train_blocks=single"))
-        network_layout.addRow("Network Arguments:", self.network_args)
+        # Sample dimensions and guidance
+        sample_params_layout = QHBoxLayout()
 
-        network_group.setLayout(network_layout)
-        layout.addWidget(network_group)
+        sample_params_layout.addWidget(QLabel("Width:"))
+        self.sample_width = NoWheelSpinBox()
+        self.sample_width.setRange(256, 2048)
+        self.sample_width.setSingleStep(64)
+        self.sample_width.setValue(1024)
+        sample_params_layout.addWidget(self.sample_width)
 
-        # Training Parameters
-        training_group = QGroupBox("Training Parameters")
-        training_layout = QFormLayout()
+        sample_params_layout.addWidget(QLabel("Height:"))
+        self.sample_height = NoWheelSpinBox()
+        self.sample_height.setRange(256, 2048)
+        self.sample_height.setSingleStep(64)
+        self.sample_height.setValue(1024)
+        sample_params_layout.addWidget(self.sample_height)
 
-        self.mixed_precision = QComboBox()
-        self.mixed_precision.addItems(["no", "fp16", "bf16"])
-        self.mixed_precision.setCurrentText(self.config.get("mixed_precision", "bf16"))
-        training_layout.addRow("Mixed Precision:", self.mixed_precision)
+        sample_params_layout.addWidget(QLabel("Guidance:"))
+        self.guidance_scale = NoWheelSpinBox()
+        self.guidance_scale.setRange(1, 20)
+        self.guidance_scale.setValue(4)
+        sample_params_layout.addWidget(self.guidance_scale)
 
-        self.save_precision = QComboBox()
-        self.save_precision.addItems(["no", "fp16", "bf16"])
-        self.save_precision.setCurrentText(self.config.get("save_precision", "bf16"))
-        training_layout.addRow("Save Precision:", self.save_precision)
+        sample_params_layout.addWidget(QLabel("Steps:"))
+        self.sample_steps = NoWheelSpinBox()
+        self.sample_steps.setRange(1, 100)
+        self.sample_steps.setValue(20)
+        sample_params_layout.addWidget(self.sample_steps)
 
-        self.network_module = QLineEdit(self.config.get("network_module", "networks.lora_flux"))
-        training_layout.addRow("Network Module:", self.network_module)
+        sample_params_layout.addStretch()
+        sample_layout.addLayout(sample_params_layout)
 
-        self.optimizer_type = QLineEdit(self.config.get("optimizer_type", "adafactor"))
-        training_layout.addRow("Optimizer Type:", self.optimizer_type)
+        # Prompt input with auto-fill button
+        prompt_header = QHBoxLayout()
+        prompt_label = QLabel("Sample Prompts:")
+        self.auto_fill_btn = QPushButton("Auto-fill from dataset")
+        self.auto_fill_btn.clicked.connect(self.auto_fill_prompts)
+        self.auto_fill_btn.setStyleSheet("background-color: #2196F3; color: white; padding: 5px;")
+        prompt_header.addWidget(prompt_label)
+        prompt_header.addWidget(self.auto_fill_btn)
+        prompt_header.addStretch()
+        sample_layout.addLayout(prompt_header)
 
-        self.learning_rate = QLineEdit(self.config.get("learning_rate", "1e-4"))
-        training_layout.addRow("Learning Rate:", self.learning_rate)
+        self.sample_prompts = QTextEdit()
+        self.sample_prompts.setPlaceholderText("Enter prompts for sampling (one per line) or click Auto-fill")
+        self.sample_prompts.setMinimumHeight(80)
+        sample_layout.addWidget(self.sample_prompts)
 
-        self.epochs = NoWheelSpinBox()
-        self.epochs.setRange(1, 1000)
-        self.epochs.setValue(self.config.get("epochs", 16))
-        training_layout.addRow("Max Epochs:", self.epochs)
+        sample_group.setLayout(sample_layout)
+        layout.addWidget(sample_group)
 
-        self.save_every = NoWheelSpinBox()
-        self.save_every.setRange(1, 100)
-        self.save_every.setValue(self.config.get("save_every", 8))
-        training_layout.addRow("Save Every N Epochs:", self.save_every)
-
-        self.seed = NoWheelSpinBox()
-        self.seed.setRange(1, 999999)
-        self.seed.setValue(self.config.get("seed", 42))
-        training_layout.addRow("Seed:", self.seed)
-
-        self.timestep_sampling = QComboBox()
-        self.timestep_sampling.addItems(["uniform", "sigmoid"])
-        self.timestep_sampling.setCurrentText(self.config.get("timestep_sampling", "sigmoid"))
-        training_layout.addRow("Timestep Sampling:", self.timestep_sampling)
-
-        self.model_prediction_type = QComboBox()
-        self.model_prediction_type.addItems(["epsilon", "v", "raw"])
-        self.model_prediction_type.setCurrentText(self.config.get("model_prediction_type", "raw"))
-        training_layout.addRow("Model Prediction Type:", self.model_prediction_type)
-
-        self.loss_type = QComboBox()
-        self.loss_type.addItems(["l1", "l2", "huber"])
-        self.loss_type.setCurrentText(self.config.get("loss_type", "l2"))
-        training_layout.addRow("Loss Type:", self.loss_type)
-
-        self.optimizer_args = QLineEdit(self.config.get("optimizer_args", "relative_step=False scale_parameter=False warmup_init=False"))
-        training_layout.addRow("Optimizer Args:", self.optimizer_args)
-
-        # Switches/Checkboxes
-        self.network_train_unet_only = QCheckBox()
-        self.network_train_unet_only.setChecked(self.config.get("network_train_unet_only", True))
-        training_layout.addRow("Train UNet Only:", self.network_train_unet_only)
-
-        self.fp8_base = QCheckBox()
-        self.fp8_base.setChecked(self.config.get("fp8_base", True))
-        training_layout.addRow("FP8 Base:", self.fp8_base)
-
-        self.highvram = QCheckBox()
-        self.highvram.setChecked(self.config.get("highvram", True))
-        training_layout.addRow("High VRAM:", self.highvram)
-
-        self.split_mode = QCheckBox()
-        self.split_mode.setChecked(self.config.get("split_mode", True))
-        training_layout.addRow("Split Mode:", self.split_mode)
-
-        training_group.setLayout(training_layout)
-        layout.addWidget(training_group)
-
-        # --- Advanced Settings Toggle ---
+        # --- Advanced Options Toggle ---
         self.advanced_toggle = QCheckBox("Show Advanced Options")
         self.advanced_toggle.setStyleSheet("font-weight: bold; color: #007acc; margin-top: 10px;")
         layout.addWidget(self.advanced_toggle)
 
-        # --- Advanced Settings Container ---
+        # --- Advanced Options Container ---
         self.advanced_container = QWidget()
-        self.advanced_layout = QVBoxLayout(self.advanced_container)
-        self.advanced_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Scripts directory
-        scripts_group = QGroupBox("Scripts Directory")
-        scripts_layout = QHBoxLayout()
-        self.scripts_dir = QLineEdit()
-        self.scripts_dir.setPlaceholderText("Path to sd_scripts folder")
-        self.scripts_dir.setText(self.config.get("scripts_dir", ""))
-        select_scripts = QPushButton("Browse")
-        select_scripts.clicked.connect(self.select_scripts_path)
-        scripts_layout.addWidget(self.scripts_dir)
-        scripts_layout.addWidget(select_scripts)
-        scripts_group.setLayout(scripts_layout)
-        self.advanced_layout.addWidget(scripts_group)
+        advanced_layout = QVBoxLayout(self.advanced_container)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Trigger Word
+        trigger_layout = QHBoxLayout()
+        trigger_layout.addWidget(QLabel("Trigger Word:"))
+        self.trigger_word = QLineEdit()
+        self.trigger_word.setPlaceholderText("Optional trigger word (e.g., p3rs0n)")
+        trigger_layout.addWidget(self.trigger_word)
+        advanced_layout.addLayout(trigger_layout)
+
+        # Caption Dropout
+        dropout_layout = QHBoxLayout()
+        dropout_layout.addWidget(QLabel("Caption Dropout Rate:"))
+        self.caption_dropout = NoWheelDoubleSpinBox()
+        self.caption_dropout.setRange(0.0, 1.0)
+        self.caption_dropout.setDecimals(2)
+        self.caption_dropout.setSingleStep(0.01)
+        self.caption_dropout.setValue(0.05)
+        dropout_layout.addWidget(self.caption_dropout)
+        dropout_layout.addStretch()
+        advanced_layout.addLayout(dropout_layout)
 
         # Resume Training
         resume_group = QGroupBox("Resume Training")
-        resume_layout = QFormLayout()
-        
+        resume_layout = QVBoxLayout()
+
         self.resume_checkbox = QCheckBox("Resume from checkpoint")
+        resume_layout.addWidget(self.resume_checkbox)
+
+        resume_path_layout = QHBoxLayout()
         self.resume_path = QLineEdit()
         self.resume_path.setEnabled(False)
-        self.resume_path.setPlaceholderText("Path to network weights file (.safetensors or .pt)")
+        self.resume_path.setPlaceholderText("Path to LoRA checkpoint (.safetensors)")
         select_resume = QPushButton("Browse")
         select_resume.setEnabled(False)
-        
-        resume_path_layout = QHBoxLayout()
+        select_resume.clicked.connect(lambda: self.select_path(self.resume_path, is_file=True))
         resume_path_layout.addWidget(self.resume_path)
         resume_path_layout.addWidget(select_resume)
-        
-        resume_layout.addRow(self.resume_checkbox)
-        resume_layout.addRow("Checkpoint:", resume_path_layout)
-        
+        resume_layout.addLayout(resume_path_layout)
+
         self.resume_checkbox.stateChanged.connect(lambda state: [
             self.resume_path.setEnabled(state == Qt.CheckState.Checked.value),
             select_resume.setEnabled(state == Qt.CheckState.Checked.value)
         ])
-        select_resume.clicked.connect(self.select_resume_path)
-        
+
         resume_group.setLayout(resume_layout)
-        self.advanced_layout.addWidget(resume_group)
+        advanced_layout.addWidget(resume_group)
 
-        # Flux Parameters
-        flux_group = QGroupBox("Flux Parameters")
-        flux_layout = QFormLayout()
-        
-        self.guidance_scale = NoWheelSpinBox()
-        self.guidance_scale.setRange(1, 20)
-        self.guidance_scale.setValue(self.config.get("guidance_scale", 1))
-        flux_layout.addRow("Guidance Scale:", self.guidance_scale)
-        
-        self.discrete_flow_shift = QCheckBox()
-        self.discrete_flow_shift.setChecked(self.config.get("discrete_flow_shift", False))
-        flux_layout.addRow("Discrete Flow Shift:", self.discrete_flow_shift)
-        
-        self.apply_t5_attn_mask = QCheckBox()
-        self.apply_t5_attn_mask.setChecked(self.config.get("apply_t5_attn_mask", False))
-        flux_layout.addRow("Apply T5 Attention Mask:", self.apply_t5_attn_mask)
-
-        self.t5xxl_max_token_length = NoWheelSpinBox()
-        self.t5xxl_max_token_length.setRange(64, 1024)
-        self.t5xxl_max_token_length.setValue(self.config.get("t5xxl_max_token_length", 256))
-        flux_layout.addRow("T5XXL Max Token Length:", self.t5xxl_max_token_length)
-        
-        flux_group.setLayout(flux_layout)
-        self.advanced_layout.addWidget(flux_group)
-
-        # Memory Optimization
-        memory_group = QGroupBox("Memory Optimization")
-        memory_layout = QFormLayout()
-        
-        self.blocks_to_swap = NoWheelSpinBox()
-        self.blocks_to_swap.setRange(0, 32)
-        self.blocks_to_swap.setValue(self.config.get("blocks_to_swap", 0))
-        memory_layout.addRow("Blocks to Swap:", self.blocks_to_swap)
-        
-        self.blockwise_fused_optimizers = QCheckBox()
-        self.blockwise_fused_optimizers.setChecked(self.config.get("blockwise_fused_optimizers", False))
-        memory_layout.addRow("Blockwise Fused Optimizers:", self.blockwise_fused_optimizers)
-        
-        self.cpu_offload = QCheckBox()
-        self.cpu_offload.setChecked(self.config.get("cpu_offload", False))
-        memory_layout.addRow("CPU Offload Checkpointing:", self.cpu_offload)
-        
-        memory_group.setLayout(memory_layout)
-        self.advanced_layout.addWidget(memory_group)
-
-        # Cache and Optimization
-        cache_group = QGroupBox("Cache and Optimization")
-        cache_layout = QFormLayout()
-
-        self.cache_latents = QCheckBox()
-        self.cache_latents.setChecked(self.config.get("cache_latents", True))
-        cache_layout.addRow("Cache Latents to Disk:", self.cache_latents)
-
-        self.cache_text_encoder = QCheckBox()
-        self.cache_text_encoder.setChecked(self.config.get("cache_text_encoder", True))
-        cache_layout.addRow("Cache Text Encoder:", self.cache_text_encoder)
-
-        self.cache_text_encoder_disk = QCheckBox()
-        self.cache_text_encoder_disk.setChecked(self.config.get("cache_text_encoder_disk", True))
-        cache_layout.addRow("Cache Text Encoder to Disk:", self.cache_text_encoder_disk)
-
-        self.persistent_workers = QCheckBox()
-        self.persistent_workers.setChecked(self.config.get("persistent_workers", True))
-        cache_layout.addRow("Persistent Data Loader Workers:", self.persistent_workers)
-
-        self.max_workers = NoWheelSpinBox()
-        self.max_workers.setRange(1, 16)
-        self.max_workers.setValue(self.config.get("max_workers", 2))
-        cache_layout.addRow("Max Data Loader Workers:", self.max_workers)
-
-        self.sdpa = QCheckBox()
-        self.sdpa.setChecked(self.config.get("sdpa", True))
-        cache_layout.addRow("SDPA:", self.sdpa)
-
-        self.flip_aug = QCheckBox()
-        self.flip_aug.setChecked(self.config.get("flip_aug", False))
-        cache_layout.addRow("Flip Augmentation:", self.flip_aug)
-
-        self.save_model_as = QComboBox()
-        self.save_model_as.addItems(["safetensors", "pt", "ckpt"])
-        self.save_model_as.setCurrentText(self.config.get("save_model_as", "safetensors"))
-        cache_layout.addRow("Save Model As:", self.save_model_as)
-
-        cache_group.setLayout(cache_layout)
-        self.advanced_layout.addWidget(cache_group)
-
-        # Additional Parameters
-        params_group = QGroupBox("Additional Parameters")
-        params_layout = QVBoxLayout()
-        
-        self.additional_params = QLineEdit()
-        self.additional_params.setPlaceholderText("Additional command line parameters (e.g., --param1 value1 --param2 value2)")
-        self.additional_params.setText(self.config.get("additional_params", ""))
-        
-        params_layout.addWidget(self.additional_params)
-        params_group.setLayout(params_layout)
-        self.advanced_layout.addWidget(params_group)
-
-        # Add Advanced Container to Main Layout
         layout.addWidget(self.advanced_container)
-        
-        # Connect Toggle
         self.advanced_container.setVisible(False)
         self.advanced_toggle.toggled.connect(self.advanced_container.setVisible)
 
-        # Start Training button
-        self.train_button = QPushButton("Start Training")
-        self.train_button.setObjectName("primaryButton")
-        self.train_button.setMinimumHeight(50)
-        self.train_button.setStyleSheet("font-size: 16px; font-weight: bold;")
-        layout.addWidget(self.train_button)
+        # --- Buttons ---
+        buttons_layout = QHBoxLayout()
 
-    def select_flux_path(self):
-        path = QFileDialog.getOpenFileName(self, "Select Flux Model", 
-                                         filter="Model files (*.safetensors)")[0]
+        # Reload Config Button
+        self.reload_btn = QPushButton("Reload Config")
+        self.reload_btn.setToolTip("Reload settings from flux_config.json")
+        self.reload_btn.clicked.connect(self.load_saved_config)
+        buttons_layout.addWidget(self.reload_btn)
+
+        # Start Button
+        self.train_button = QPushButton("Start Flux Training")
+        self.train_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
+        buttons_layout.addWidget(self.train_button)
+
+        layout.addLayout(buttons_layout)
+        layout.addStretch()
+
+        scroll.setWidget(content_widget)
+        main_layout.addWidget(scroll)
+        self.setLayout(main_layout)
+
+    def select_path(self, line_edit, is_file=False):
+        if is_file:
+            path, _ = QFileDialog.getOpenFileName(self, "Select File", filter="Model files (*.safetensors *.pt)")
+        else:
+            path = QFileDialog.getExistingDirectory(self, "Select Directory")
         if path:
-            self.flux_path.setText(path)
+            line_edit.setText(path)
             self.save_current_config()
 
-    def select_clip_path(self):
-        path = QFileDialog.getOpenFileName(self, "Select CLIP-L Model", 
-                                         filter="Model files (*.safetensors)")[0]
-        if path:
-            self.clip_l_path.setText(path)
-            self.save_current_config()
+    def on_sampling_toggled(self, state):
+        """Enable/disable sample prompts based on checkbox"""
+        is_checked = (state == Qt.CheckState.Checked.value)
+        self.sample_prompts.setEnabled(is_checked)
+        self.auto_fill_btn.setEnabled(is_checked)
+        self.sample_every.setEnabled(is_checked)
+        self.sample_width.setEnabled(is_checked)
+        self.sample_height.setEnabled(is_checked)
+        self.guidance_scale.setEnabled(is_checked)
+        self.sample_steps.setEnabled(is_checked)
+        self.save_current_config()
 
-    def select_t5_path(self):
-        path = QFileDialog.getOpenFileName(self, "Select T5XXL Model", 
-                                         filter="Model files (*.safetensors)")[0]
-        if path:
-            self.t5xxl_path.setText(path)
-            self.save_current_config()
+    def auto_fill_prompts(self):
+        """Auto-fill prompts with the first caption from the dataset"""
+        try:
+            if not self.parent or not hasattr(self.parent, 'parent'):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Error", "Unable to access dataset path.")
+                return
 
-    def select_resume_path(self):
-        path = QFileDialog.getOpenFileName(self, "Select Network Weights File", 
-                                         filter="Model files (*.safetensors *.pt)")[0]
-        if path:
-            self.resume_path.setText(path)
-            self.save_current_config()
+            main_window = self.parent.parent
+            if not hasattr(main_window, 'get_effective_dataset_path'):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Error", "Unable to access dataset path.")
+                return
 
-    def select_scripts_path(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Scripts Directory")
-        if path:
-            self.scripts_dir.setText(path)
-            self.save_current_config()
+            dataset_path = main_window.get_effective_dataset_path()
 
-    def select_ae_path(self):
-        path = QFileDialog.getOpenFileName(self, "Select AutoEncoder Model", 
-                                         filter="Model files (*.safetensors *.pt *.sft)")[0]
-        if path:
-            self.ae_path.setText(path)
-            self.save_current_config()
+            if not dataset_path:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Dataset Not Set", "Please select a dataset folder first in the main window.")
+                return
 
-    def select_output_path(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if path:
-            self.output_dir.setText(path)
-            self.save_current_config()
+            if not dataset_path.exists():
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Dataset Not Found", "Selected dataset path does not exist.")
+                return
+
+            # Look for caption files
+            caption_extensions = ["*.txt", "*.caption"]
+            caption_files = []
+
+            for ext in caption_extensions:
+                caption_files.extend(dataset_path.rglob(ext))
+
+            if not caption_files:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "No Captions Found", f"No caption files found in dataset directory:\n{dataset_path}")
+                return
+
+            # Sort and get first caption
+            caption_files = sorted(caption_files)
+            first_caption_file = caption_files[0]
+
+            # Read the caption
+            with open(first_caption_file, "r", encoding="utf-8") as f:
+                caption = f.read().strip()
+
+            if caption:
+                self.sample_prompts.setPlainText(caption)
+                from PyQt6.QtWidgets import QMessageBox
+                preview = caption[:100] + "..." if len(caption) > 100 else caption
+                msg = f"Loaded from {first_caption_file.name}\n\n{preview}"
+                QMessageBox.information(self, "Caption Loaded", msg)
+            else:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Empty Caption", f"File {first_caption_file.name} is empty.")
+
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to load caption: {str(e)}")
+
+    def get_resolution_list(self):
+        """Returns list of selected resolutions"""
+        resolutions = []
+        if self.res_512.isChecked():
+            resolutions.append(512)
+        if self.res_768.isChecked():
+            resolutions.append(768)
+        if self.res_1024.isChecked():
+            resolutions.append(1024)
+        return resolutions if resolutions else [1024]  # Default to 1024 if none selected
 
     def get_config(self):
         """Returns the current configuration as a dictionary"""
         return {
-            "flux_path": self.flux_path.text(),
-            "clip_l_path": self.clip_l_path.text(),
-            "t5xxl_path": self.t5xxl_path.text(),
-            "ae_path": self.ae_path.text(),
-            "scripts_dir": self.scripts_dir.text(),
+            "model_name_or_path": self.model_path.text(),
             "output_dir": self.output_dir.text(),
             "output_name": self.output_name.text(),
-            "mixed_precision": self.mixed_precision.currentText(),
-            "save_precision": self.save_precision.currentText(),
-            "network_module": self.network_module.text(),
-            "optimizer_type": self.optimizer_type.text(),
-            "learning_rate": self.learning_rate.text(),
-            "epochs": self.epochs.value(),
-            "save_every": self.save_every.value(),
-            "seed": self.seed.value(),
-            "timestep_sampling": self.timestep_sampling.currentText(),
-            "model_prediction_type": self.model_prediction_type.currentText(),
-            "loss_type": self.loss_type.currentText(),
-            "optimizer_args": self.optimizer_args.text(),
-            "network_train_unet_only": self.network_train_unet_only.isChecked(),
-            "fp8_base": self.fp8_base.isChecked(),
-            "highvram": self.highvram.isChecked(),
-            "split_mode": self.split_mode.isChecked(),
-            "cache_latents": self.cache_latents.isChecked(),
-            "cache_text_encoder": self.cache_text_encoder.isChecked(),
-            "cache_text_encoder_disk": self.cache_text_encoder_disk.isChecked(),
-            "persistent_workers": self.persistent_workers.isChecked(),
-            "max_workers": self.max_workers.value(),
-            "sdpa": self.sdpa.isChecked(),
-            "save_model_as": self.save_model_as.currentText(),
             "network_dim": self.network_dim.value(),
             "network_alpha": self.network_alpha.value(),
-            "network_args": self.network_args.text(),
-            "flip_aug": self.flip_aug.isChecked(),
-            "additional_params": self.additional_params.text(),
+            "learning_rate": self.learning_rate.text(),
+            "steps": self.steps.value(),
+            "batch_size": self.batch_size.value(),
+            "resolution": self.get_resolution_list(),
+            "mixed_precision": self.mixed_precision.currentText(),
+            "save_precision": self.save_precision.currentText(),
+            "save_every": self.save_every.value(),
+            "quantize": self.quantize.isChecked(),
+            "low_vram": self.low_vram.isChecked(),
+            "use_ema": self.use_ema.isChecked(),
+            "ema_decay": self.ema_decay.value(),
+            "optimizer": self.optimizer.currentText(),
+            "cache_latents_to_disk": self.cache_latents.isChecked(),
+            "caption_dropout_rate": self.caption_dropout.value(),
+            "trigger_word": self.trigger_word.text(),
+            "enable_sampling": self.enable_sampling.isChecked(),
+            "sample_every": self.sample_every.value(),
+            "sample_width": self.sample_width.value(),
+            "sample_height": self.sample_height.value(),
+            "sample_prompts": self.sample_prompts.toPlainText(),
+            "guidance_scale": self.guidance_scale.value(),
+            "sample_steps": self.sample_steps.value(),
+            "seed": self.seed.value(),
             "resume_training": self.resume_checkbox.isChecked(),
             "resume_path": self.resume_path.text()
         }
@@ -448,3 +525,46 @@ class FluxTrainingWidgets(FluxTrainingWidgetsBase):
     def save_current_config(self):
         """Salva a configuração atual no arquivo JSON"""
         save_config(self.get_config())
+
+    def load_saved_config(self):
+        config = load_config()
+        if not config:
+            return
+
+        if "model_name_or_path" in config: self.model_path.setText(config["model_name_or_path"])
+        if "output_dir" in config: self.output_dir.setText(config["output_dir"])
+        if "output_name" in config: self.output_name.setText(config["output_name"])
+        if "network_dim" in config: self.network_dim.setValue(config["network_dim"])
+        if "network_alpha" in config: self.network_alpha.setValue(config["network_alpha"])
+        if "learning_rate" in config: self.learning_rate.setText(config["learning_rate"])
+        if "steps" in config: self.steps.setValue(config["steps"])
+        if "batch_size" in config: self.batch_size.setValue(config["batch_size"])
+
+        # Resolution checkboxes
+        if "resolution" in config:
+            res_list = config["resolution"]
+            self.res_512.setChecked(512 in res_list)
+            self.res_768.setChecked(768 in res_list)
+            self.res_1024.setChecked(1024 in res_list)
+
+        if "mixed_precision" in config: self.mixed_precision.setCurrentText(config["mixed_precision"])
+        if "save_precision" in config: self.save_precision.setCurrentText(config["save_precision"])
+        if "save_every" in config: self.save_every.setValue(config["save_every"])
+        if "quantize" in config: self.quantize.setChecked(config["quantize"])
+        if "low_vram" in config: self.low_vram.setChecked(config["low_vram"])
+        if "use_ema" in config: self.use_ema.setChecked(config["use_ema"])
+        if "ema_decay" in config: self.ema_decay.setValue(config["ema_decay"])
+        if "optimizer" in config: self.optimizer.setCurrentText(config["optimizer"])
+        if "cache_latents_to_disk" in config: self.cache_latents.setChecked(config["cache_latents_to_disk"])
+        if "caption_dropout_rate" in config: self.caption_dropout.setValue(config["caption_dropout_rate"])
+        if "trigger_word" in config: self.trigger_word.setText(config["trigger_word"])
+        if "enable_sampling" in config: self.enable_sampling.setChecked(config["enable_sampling"])
+        if "sample_every" in config: self.sample_every.setValue(config["sample_every"])
+        if "sample_width" in config: self.sample_width.setValue(config["sample_width"])
+        if "sample_height" in config: self.sample_height.setValue(config["sample_height"])
+        if "sample_prompts" in config: self.sample_prompts.setPlainText(config["sample_prompts"])
+        if "guidance_scale" in config: self.guidance_scale.setValue(config["guidance_scale"])
+        if "sample_steps" in config: self.sample_steps.setValue(config["sample_steps"])
+        if "seed" in config: self.seed.setValue(config["seed"])
+        if "resume_training" in config: self.resume_checkbox.setChecked(config["resume_training"])
+        if "resume_path" in config: self.resume_path.setText(config["resume_path"])

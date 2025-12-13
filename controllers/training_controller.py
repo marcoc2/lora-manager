@@ -20,96 +20,173 @@ class TrainingController(QObject):
     def set_script_manager(self, script_manager):
         self.script_manager = script_manager
 
-    # --- Flux Logic ---
+    # --- Flux Logic (ai-toolkit) ---
 
     def get_flux_command(self, config, dataset_path):
-        """Generates the training command for Flux"""
-        # Check if dataset_path is already the artifact folder (has dataset.toml)
-        if (dataset_path / "dataset.toml").exists():
-            dataset_config = dataset_path / "dataset.toml"
-        else:
-            dataset_config = dataset_path / "cropped_images/dataset.toml"
+        """Generates the command for Flux training using ai-toolkit YAML config"""
+        import yaml
+        import re
 
-        if not config.get("scripts_dir"):
-            return None, "Scripts directory is not set."
+        # Validate inputs
+        if not config.get("model_name_or_path"):
+            return None, "Model path is required"
 
-        original_script_path = Path(config["scripts_dir"]) / "flux_train_network.py"
-        
-        # We need script_manager to create temp script. 
-        # If not available, we might need to use original path or handle it differently.
-        # Assuming script_manager is available via some context or passed in.
-        if self.script_manager:
-            script_path = self.script_manager.create_temp_script(original_script_path)
-        else:
-            script_path = original_script_path
+        if not config.get("output_dir"):
+            return None, "Output directory is required"
 
-        cmd = [
-            "accelerate launch",
-            "--mixed_precision", config["mixed_precision"],
-            "--num_cpu_threads_per_process 1",
-            str(script_path),
-            f"--pretrained_model_name_or_path {config['flux_path']}",
-            f"--clip_l {config['clip_l_path']}",
-            f"--t5xxl {config['t5xxl_path']}",
-            f"--ae {config['ae_path']}",
-            "--cache_latents_to_disk" if config["cache_latents"] else "",
-            f"--save_model_as {config['save_model_as']}",
-            "--sdpa" if config["sdpa"] else "",
-            "--persistent_data_loader_workers" if config["persistent_workers"] else "",
-            f"--max_data_loader_n_workers {config['max_workers']}",
-            f"--seed {config['seed']}",
-            "--gradient_checkpointing",
-            f"--mixed_precision {config['mixed_precision']}",
-            f"--save_precision {config['save_precision']}",
-            f"--network_module {config['network_module']}",
-            f"--network_dim {config['network_dim']}",
-            f"--network_alpha {config['network_alpha']}",
-            f"--optimizer_type {config['optimizer_type']}",
-            f"--learning_rate {config['learning_rate']}",
-            "--network_train_unet_only" if config["network_train_unet_only"] else "",
-            "--cache_text_encoder_outputs" if config["cache_text_encoder"] else "",
-            "--cache_text_encoder_outputs_to_disk" if config["cache_text_encoder_disk"] else "",
-            "--flip_aug" if config["flip_aug"] else "",
-            "--fp8_base" if config["fp8_base"] else "",
-            "--highvram" if config["highvram"] else "",
-            f"--max_train_epochs {config['epochs']}",
-            f"--save_every_n_epochs {config['save_every']}",
-            f"--dataset_config {dataset_config}",
-            f"--output_dir {config['output_dir']}" if config["output_dir"] else "",
-            f"--output_name {config['output_name']}" if config["output_name"] else "",
-            f"--timestep_sampling {config['timestep_sampling']}",
-            f"--model_prediction_type {config['model_prediction_type']}",
-            f"--guidance_scale 1.0",
-            f"--loss_type {config['loss_type']}",
-            "--split_mode" if config["split_mode"] else ""
-        ]
-        
-        # Optimizer args
-        optimizer_args = config.get("optimizer_args", "").strip()
-        if optimizer_args:
-            cmd.append('--optimizer_args')
-            for arg in optimizer_args.split():
-                cmd.append(arg)
+        if not config.get("output_name"):
+            return None, "Output name is required"
 
-        # Network args
-        network_args = config.get("network_args", "").strip()
-        if network_args:
-            cmd.append('--network_args')
-            for arg in network_args.split():
-                cmd.append(arg)
+        # Validate resume checkpoint if specified
+        if config.get("resume_training"):
+            resume_path = config.get("resume_path")
+            if not resume_path:
+                return None, "Resume training is enabled but no checkpoint selected"
+            if not Path(resume_path).exists():
+                return None, f"Resume checkpoint not found: {resume_path}"
 
-        # Resume
+        # Update config with dataset_path and save it
+        try:
+            config["dataset_path"] = str(dataset_path).replace("\\", "/")
+            with open("flux_config.json", "w") as f:
+                json.dump(config, f, indent=4)
+        except Exception as e:
+            print(f"Failed to update config with dataset path: {e}")
+
+        # Prepare output directory
+        output_dir = Path(config.get("output_dir", "output"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Ensure name is stripped of extension
+        name_no_ext = Path(config.get("output_name", "flux_lora")).stem
+
+        # Build network config with resume support
+        network_config = {
+            "type": "lora",
+            "linear": config.get("network_dim", 16),
+            "linear_alpha": config.get("network_alpha", 16)
+        }
+
+        # Handle resume training
         if config.get("resume_training") and config.get("resume_path"):
-            cmd.append(f"--network_weights {config['resume_path']}")
+            resume_path = Path(config.get("resume_path"))
+            network_config["resume_lora_path"] = str(resume_path.absolute()).replace("\\", "/")
 
-        # Additional params
-        additional_params = config.get("additional_params", "").strip()
-        if additional_params:
-            cmd.extend(additional_params.split())
+            # Copy checkpoint to expected location for ai-toolkit auto-resume
+            job_name = name_no_ext
+            match = re.search(r'_(\d+)\.(safetensors|pt)$', resume_path.name)
+            if match:
+                step_num = match.group(1)
+                expected_name = f"{job_name}_{step_num}.safetensors"
+                expected_path = output_dir / expected_name
 
-        filtered_cmd = filter(None, cmd)
-        cmd_str = " ".join(str(item) for item in filtered_cmd if str(item).strip())
-        return cmd_str, None
+                if expected_path != resume_path.absolute():
+                    shutil.copy2(resume_path, expected_path)
+                    print(f"Checkpoint copied to: {expected_path}")
+
+        # Build EMA config
+        ema_config = {
+            "use_ema": config.get("use_ema", True),
+            "ema_decay": config.get("ema_decay", 0.99)
+        }
+
+        # Get resolution list
+        resolution = config.get("resolution", [512, 768, 1024])
+        if not isinstance(resolution, list):
+            resolution = [resolution]
+
+        # Parse sample prompts
+        prompts = [p.strip() for p in config.get("sample_prompts", "").split("\n") if p.strip()]
+        if not prompts:
+            prompts = ["a person in the park, high quality photo"]
+
+        # Generate YAML config
+        yaml_config = {
+            "job": "extension",
+            "config": {
+                "name": name_no_ext,
+                "process": [{
+                    "type": "sd_trainer",
+                    "training_folder": str(output_dir.absolute()).replace("\\", "/"),
+                    "device": "cuda:0",
+                    "network": network_config,
+                    "save": {
+                        "dtype": config.get("save_precision", "float16"),
+                        "save_every": config.get("save_every", 250),
+                        "max_step_saves_to_keep": 4,
+                        "push_to_hub": False
+                    },
+                    "datasets": [{
+                        "folder_path": str(dataset_path.absolute()).replace("\\", "/"),
+                        "caption_ext": "txt",
+                        "caption_dropout_rate": config.get("caption_dropout_rate", 0.05),
+                        "shuffle_tokens": False,
+                        "cache_latents_to_disk": config.get("cache_latents_to_disk", True),
+                        "resolution": resolution
+                    }],
+                    "train": {
+                        "batch_size": config.get("batch_size", 1),
+                        "steps": config.get("steps", 2000),
+                        "gradient_accumulation_steps": 1,
+                        "train_unet": True,
+                        "train_text_encoder": False,
+                        "gradient_checkpointing": True,
+                        "noise_scheduler": "flowmatch",
+                        "optimizer": config.get("optimizer", "adamw8bit"),
+                        "lr": float(config.get("learning_rate", "1e-4")),
+                        "ema_config": ema_config,
+                        "dtype": config.get("mixed_precision", "bf16"),
+                        "disable_sampling": not config.get("enable_sampling", True)
+                    },
+                    "model": {
+                        "name_or_path": config.get("model_name_or_path"),
+                        "is_flux": True,
+                        "quantize": config.get("quantize", True),
+                        "low_vram": config.get("low_vram", False)
+                    },
+                    "sample": {
+                        "sampler": "flowmatch",
+                        "sample_every": config.get("sample_every", 250),
+                        "width": config.get("sample_width", 1024),
+                        "height": config.get("sample_height", 1024),
+                        "prompts": prompts,
+                        "neg": "",
+                        "seed": config.get("seed", 42),
+                        "walk_seed": True,
+                        "guidance_scale": config.get("guidance_scale", 4),
+                        "sample_steps": config.get("sample_steps", 20)
+                    }
+                }],
+                "meta": {
+                    "name": "[name]",
+                    "version": "1.0"
+                }
+            }
+        }
+
+        # Add trigger word if specified
+        if config.get("trigger_word"):
+            yaml_config["config"]["process"][0]["trigger_word"] = config.get("trigger_word")
+
+        # Save YAML file
+        yaml_path = output_dir / "flux_train.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_config, f, sort_keys=False)
+
+        # Build command
+        toolkit_path = Path("reference/ai-toolkit-original").absolute()
+        run_script = toolkit_path / "run.py"
+
+        # Use the specific venv python
+        venv_python = Path("C:/Apps/sd-scripts/venv/Scripts/python.exe")
+        if venv_python.exists():
+            python_exe = str(venv_python)
+        else:
+            python_exe = sys.executable
+
+        command = f'"{python_exe}" "{run_script}" "{yaml_path}"'
+
+        return command, None
 
     # --- Qwen Logic ---
 
