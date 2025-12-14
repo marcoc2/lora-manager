@@ -54,12 +54,7 @@ class TrainingTabs(QWidget):
         self.qwen_widget.train_button.clicked.connect(self.queue_qwen_training_task)
         self.zimage_widget.train_button.clicked.connect(self.queue_zimage_training_task)
         self.wan_widget.train_button.clicked.connect(self.queue_wan_training_task)
-        
-        # Connect Qwen specific actions
-        self.qwen_widget.cache_latents_button.clicked.connect(self.cache_latents_action)
-        self.qwen_widget.cache_text_encoder_button.clicked.connect(self.cache_text_encoder_action)
-        self.qwen_widget.convert_lora_button.clicked.connect(self.convert_lora_action)
-        
+
         # Add tabs to main layout
         main_layout.addWidget(self.tabs)
         
@@ -120,54 +115,35 @@ class TrainingTabs(QWidget):
             QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
 
     def queue_qwen_training_task(self):
-        """Add a Qwen-Image training task to the queue"""
+        """Add a Qwen-Image training task to the queue (ai-toolkit)"""
         dataset_path = self.parent.get_effective_dataset_path()
         if not dataset_path:
             QMessageBox.warning(self, "Warning", "Please select a dataset folder first!")
             return
-            
+
         try:
+            # Save config
             self.qwen_widget.save_current_config()
+
+            # Get config from view
             config = self.qwen_widget.get_config()
-            
-            result, error = self.controller.get_qwen_command(config, dataset_path)
-            
+
+            # Get command from controller
+            command, error = self.controller.get_qwen_command(config, dataset_path)
+
             if error:
-                # If error is a list (validation errors)
-                if isinstance(error, list):
-                    QMessageBox.critical(self, "Validation Error", "\n".join(error))
-                else:
-                    QMessageBox.critical(self, "Error", str(error))
-                return
-                
-            if result is None:
+                QMessageBox.warning(self, "Validation Error", error)
                 return
 
-            # Check if we need to run cache commands first
-            if result.get("needs_cache"):
-                reply = QMessageBox.question(self, "Cache Required", 
-                    "Training requires cache files that don't exist. Create cache automatically?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                
-                if reply != QMessageBox.StandardButton.Yes:
-                    return
+            if command is None:
+                return
 
-                # Add cache commands to queue
-                for cmd in result["cache_commands"]:
-                    self.queue_manager.add_task(cmd, dataset_path, "Cache Generation")
-                
-                # Add training command
-                output_name = config.get("output_name") or "qwen_training"
-                self.queue_manager.add_task(result["training_command"], dataset_path, output_name, metadata={"model_type": "qwen"})
-                
-                QMessageBox.information(self, "Success", 
-                    f"Added cache generation and training task '{output_name}' to queue!")
-            else:
-                # Direct training
-                output_name = config.get("output_name") or "qwen_training"
-                self.queue_manager.add_task(result["training_command"], dataset_path, output_name, metadata={"model_type": "qwen"})
-                QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
-            
+            # Add to queue
+            output_name = config.get("output_name") or "qwen_training"
+            print(f"Queueing task: {output_name}")
+            self.queue_manager.add_task(command, dataset_path, output_name, metadata={"model_type": "qwen"})
+            QMessageBox.information(self, "Success", f"Training task '{output_name}' added to queue!")
+
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -229,18 +205,6 @@ class TrainingTabs(QWidget):
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error queuing training task: {str(e)}")
-
-    def cache_latents_action(self):
-        # TODO: Implement using controller
-        pass
-
-    def cache_text_encoder_action(self):
-        # TODO: Implement using controller
-        pass
-
-    def convert_lora_action(self):
-        # TODO: Implement using controller
-        pass
 
     def save_config(self):
         """Save configurations for all widgets"""
