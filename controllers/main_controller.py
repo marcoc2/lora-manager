@@ -1,7 +1,7 @@
 import sys
 import toml
 from pathlib import Path
-from PyQt6.QtWidgets import QFileDialog, QApplication
+from PyQt6.QtWidgets import QFileDialog, QApplication, QMessageBox
 from PyQt6.QtCore import QObject
 
 from views.main_window import DatasetManagerGUI
@@ -18,6 +18,7 @@ from models.janus_generator import JanusGenerator
 from controllers.caption_controller import CaptionController
 from training_widgets import CommandOutputDialog
 from services.path_resolver import PathResolver
+from services.project_manager import ProjectManager
 
 
 class MainController(QObject):
@@ -26,13 +27,16 @@ class MainController(QObject):
         self.view = view
         self.dataset_path = None
         self.path_resolver = PathResolver()  # Centralized path resolution
+        self.project_manager = ProjectManager(self)  # Project persistence
         self.image_processor = ImageProcessor()
         self.caption_controller = CaptionController(self)
 
-        # Share path_resolver with view
+        # Share services with view
         self.view.path_resolver = self.path_resolver
+        self.view.project_manager = self.project_manager
 
         self.connect_signals()
+        self._connect_project_signals()
 
     def connect_signals(self):
         self.view.select_dataset_folder_clicked.connect(self.select_dataset_folder)
@@ -47,6 +51,11 @@ class MainController(QObject):
         if hasattr(self.view, 'caption_panel'):
             self.view.caption_panel.generate_clicked.connect(self.generate_captions)
 
+    def _connect_project_signals(self):
+        """Connect project manager signals"""
+        self.project_manager.project_loaded.connect(self._on_project_loaded)
+        self.project_manager.save_status_changed.connect(self._on_save_status_changed)
+
     def select_dataset_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, "Select Dataset Folder")
         if folder:
@@ -54,9 +63,131 @@ class MainController(QObject):
             self.path_resolver.set_dataset_path(self.dataset_path)  # Update resolver
             self.view.dataset_path = self.dataset_path  # Update view
             self.view.active_artifact_path = None  # Reset artifact
+
+            # Try to load existing project
+            project = self.project_manager.load_project(self.dataset_path)
+
+            if project is None:
+                # No project found - ask user if they want to create one
+                self._prompt_create_project()
+
             self.view.populate_image_grid(self.dataset_path)
             self.scan_artifacts()
             self.update_status()
+
+    def _prompt_create_project(self):
+        """Ask user if they want to create a new project for this folder"""
+        reply = QMessageBox.question(
+            self.view,
+            "Criar Projeto",
+            f"Esta pasta não tem um projeto lora_project.json.\n\n"
+            f"Deseja criar um projeto para '{self.dataset_path.name}'?\n\n"
+            f"Um projeto permite salvar configurações de treinamento,\n"
+            f"trigger word e histórico de treinos.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.project_manager.create_project(self.dataset_path)
+            # Ask if user wants to move original images
+            self._prompt_move_original_images()
+
+    def _prompt_move_original_images(self):
+        """Ask user if they want to move original images to 'original_dataset' folder"""
+        # Check if there are images in the root folder
+        image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.avif'}
+        root_images = [f for f in self.dataset_path.iterdir()
+                       if f.is_file() and f.suffix.lower() in image_extensions]
+
+        if not root_images:
+            return  # No images to move
+
+        # Check if original_dataset already exists
+        original_folder = self.dataset_path / "original_dataset"
+        if original_folder.exists():
+            return  # Already organized
+
+        reply = QMessageBox.question(
+            self.view,
+            "Organizar Imagens",
+            f"Encontradas {len(root_images)} imagens na raiz do dataset.\n\n"
+            f"Deseja movê-las para a pasta 'original_dataset'?\n\n"
+            f"Isso mantém os originais organizados e protegidos,\n"
+            f"permitindo usar diferentes resoluções para treino.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self._move_images_to_original(root_images, original_folder)
+
+    def _move_images_to_original(self, images, dest_folder):
+        """Move images to original_dataset folder"""
+        import shutil
+
+        try:
+            dest_folder.mkdir(parents=True, exist_ok=True)
+
+            moved_count = 0
+            for img_path in images:
+                dest_path = dest_folder / img_path.name
+                shutil.move(str(img_path), str(dest_path))
+                moved_count += 1
+
+            # Update project assets
+            if self.project_manager.has_project:
+                self.project_manager.project.assets.source_images = "./original_dataset"
+                self.project_manager.schedule_autosave()
+
+            self.view.show_message(
+                "Sucesso",
+                f"{moved_count} imagens movidas para 'original_dataset'.\n\n"
+                f"Os originais agora estão protegidos e organizados."
+            )
+
+            # Refresh UI
+            self.view.populate_image_grid(self.dataset_path)
+            self.scan_artifacts()
+
+        except Exception as e:
+            self.view.show_critical("Erro", f"Erro ao mover imagens: {str(e)}")
+
+    def _on_project_loaded(self, project):
+        """Handle project loaded signal"""
+        if project is None:
+            # No project - update UI accordingly
+            if hasattr(self.view, 'dataset_view'):
+                self.view.dataset_view.update_project_info(None)
+            return
+
+        # Restore active artifact from project
+        if project.active_artifact:
+            self.path_resolver.set_active_artifact(project.active_artifact)
+            self.view.active_artifact_path = self.path_resolver.active_artifact_path
+
+            # Select in combo box
+            if hasattr(self.view, 'dataset_view'):
+                combo = self.view.dataset_view.artifact_combo
+                index = combo.findText(project.active_artifact)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+
+        # Update trigger word in caption panel
+        if project.trigger_word and hasattr(self.view, 'caption_panel'):
+            if hasattr(self.view.caption_panel, 'trigger_word'):
+                self.view.caption_panel.trigger_word.setText(project.trigger_word)
+
+        # Update project info in UI
+        if hasattr(self.view, 'dataset_view'):
+            self.view.dataset_view.update_project_info(project)
+
+        print(f"[MainController] Project loaded: {project.project_name}")
+
+    def _on_save_status_changed(self, status: str):
+        """Handle save status changes for UI feedback"""
+        if hasattr(self.view, 'dataset_view'):
+            self.view.dataset_view.update_save_status(status)
 
     def scan_artifacts(self):
         """Scans for cropped_images folders and populates the combo box"""
@@ -85,35 +216,46 @@ class MainController(QObject):
         self.path_resolver.set_active_artifact(folder_name)
         artifact_path = self.path_resolver.active_artifact_path
         self.view.active_artifact_path = artifact_path  # Update view
-        toml_path = artifact_path / "dataset.toml"
-        qwen_toml_path = artifact_path / "dataset_qwen.toml"
-        
+
+        # Save selection to project (auto-save with debounce)
+        if self.project_manager.has_project:
+            self.project_manager.set_active_artifact(folder_name)
+
         # Update image grid to show images from this artifact
         self.view.populate_image_grid(artifact_path)
-        
-        info_text = f"Artifact: {folder_name}\n"
-        
-        if toml_path.exists():
-            try:
-                data = toml.load(toml_path)
-                # Extract some key info
-                if "datasets" in data and len(data["datasets"]) > 0:
-                    res = data["datasets"][0].get("resolution", "Unknown")
-                    batch = data["datasets"][0].get("batch_size", "Unknown")
-                    info_text += f"SD-Scripts: Res={res}, Batch={batch}\n"
-            except Exception as e:
-                info_text += f"Error reading dataset.toml: {e}\n"
+
+        # Build info text based on folder type
+        if folder_name == "original_dataset":
+            info_text = f"Target: {folder_name}\n"
+            info_text += "Imagens originais (sem pré-processamento)\n"
+            info_text += "Ideal para: ai-toolkit (Flux, Qwen, Z-Image)\n"
         else:
-            info_text += "No dataset.toml found.\n"
-            
-        if qwen_toml_path.exists():
-             try:
-                data = toml.load(qwen_toml_path)
-                if "general" in data:
-                    res = data["general"].get("resolution", "Unknown")
-                    info_text += f"Musubi: Res={res}\n"
-             except Exception as e:
-                info_text += f"Error reading dataset_qwen.toml: {e}\n"
+            info_text = f"Target: {folder_name}\n"
+
+            toml_path = artifact_path / "dataset.toml"
+            qwen_toml_path = artifact_path / "dataset_qwen.toml"
+
+            if toml_path.exists():
+                try:
+                    data = toml.load(toml_path)
+                    # Extract some key info
+                    if "datasets" in data and len(data["datasets"]) > 0:
+                        res = data["datasets"][0].get("resolution", "Unknown")
+                        batch = data["datasets"][0].get("batch_size", "Unknown")
+                        info_text += f"SD-Scripts: Res={res}, Batch={batch}\n"
+                except Exception as e:
+                    info_text += f"Error reading dataset.toml: {e}\n"
+            else:
+                info_text += "No dataset.toml found.\n"
+
+            if qwen_toml_path.exists():
+                try:
+                    data = toml.load(qwen_toml_path)
+                    if "general" in data:
+                        res = data["general"].get("resolution", "Unknown")
+                        info_text += f"Musubi: Res={res}\n"
+                except Exception as e:
+                    info_text += f"Error reading dataset_qwen.toml: {e}\n"
         
         # Count images
         try:

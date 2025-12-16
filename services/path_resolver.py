@@ -21,6 +21,7 @@ class PathResolver:
 
     IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
     ARTIFACT_PREFIX = "cropped_images"
+    ORIGINAL_FOLDER = "original_dataset"
 
     def __init__(self):
         self._dataset_path: Optional[Path] = None
@@ -92,16 +93,35 @@ class PathResolver:
         Find all cropped_images* folders in dataset, sorted alphabetically.
         Returns list of folder names (not full paths).
         """
+        return self.find_target_folders()
+
+    def find_target_folders(self) -> List[str]:
+        """
+        Find all target image folders in dataset.
+        Includes: original_dataset, cropped_images_*
+        Returns list of folder names sorted with original_dataset first.
+        """
         if not self._dataset_path or not self._dataset_path.exists():
             return []
 
-        artifacts = []
-        for item in self._dataset_path.iterdir():
-            if item.is_dir() and item.name.startswith(self.ARTIFACT_PREFIX):
-                artifacts.append(item.name)
+        folders = []
 
-        # Sort alphabetically for deterministic order
-        return sorted(artifacts)
+        for item in self._dataset_path.iterdir():
+            if item.is_dir():
+                # Include original_dataset
+                if item.name == self.ORIGINAL_FOLDER:
+                    folders.append(item.name)
+                # Include cropped_images_* folders
+                elif item.name.startswith(self.ARTIFACT_PREFIX):
+                    folders.append(item.name)
+
+        # Sort: original_dataset first, then alphabetically
+        def sort_key(name):
+            if name == self.ORIGINAL_FOLDER:
+                return (0, name)  # First
+            return (1, name)  # Rest alphabetically
+
+        return sorted(folders, key=sort_key)
 
     def get_images_directory(self) -> Optional[Path]:
         """

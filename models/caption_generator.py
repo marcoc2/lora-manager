@@ -1,10 +1,33 @@
 import os
+import math
 import torch
 from transformers import AutoProcessor, AutoModelForCausalLM
 from PIL import Image
 from pathlib import Path
 from typing import Tuple, Optional, Callable
 import gc
+
+
+# Target ~0.25 MP for faster processing (512x512 = 262,144 pixels)
+TARGET_MEGAPIXELS = 0.25
+TARGET_PIXELS = int(TARGET_MEGAPIXELS * 1_000_000)  # 250,000 pixels
+
+
+def resize_for_captioning(image: Image.Image, target_pixels: int = TARGET_PIXELS) -> Image.Image:
+    """
+    Resize image to approximately target_pixels while maintaining aspect ratio.
+    """
+    width, height = image.size
+    current_pixels = width * height
+
+    if current_pixels <= target_pixels:
+        return image
+
+    scale = math.sqrt(target_pixels / current_pixels)
+    new_width = int(width * scale)
+    new_height = int(height * scale)
+
+    return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 from unittest.mock import patch
 from transformers.dynamic_module_utils import get_imports
 import warnings
@@ -111,17 +134,13 @@ class CaptionGenerator:
         """
         try:
             self._init_model()
-            
+
             # Abre e processa a imagem
             image = Image.open(image_path).convert('RGB')
-            
-            # Redimensiona se necessário
-            max_size = 1024
-            if max(image.size) > max_size:
-                ratio = max_size / max(image.size)
-                new_size = tuple(int(dim * ratio) for dim in image.size)
-                image = image.resize(new_size, Image.Resampling.LANCZOS)
-            
+
+            # Redimensiona para ~0.25 MP para processamento mais rápido
+            image = resize_for_captioning(image)
+
             # Prepara inputs
             task_prompt = '<MORE_DETAILED_CAPTION>'
             inputs = self.processor(

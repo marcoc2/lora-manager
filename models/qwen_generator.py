@@ -4,11 +4,50 @@ Qwen2.5-VL Caption Generator using HuggingFace Transformers
 Uses Qwen/Qwen2.5-VL-7B-Instruct for high-quality image captioning.
 """
 import os
+import math
 import torch
 from PIL import Image
 from pathlib import Path
 from typing import Tuple, Optional, Callable
 import gc
+
+
+# Target ~0.25 MP for faster processing (512x512 = 262,144 pixels)
+TARGET_MEGAPIXELS = 0.25
+TARGET_PIXELS = int(TARGET_MEGAPIXELS * 1_000_000)  # 250,000 pixels
+
+
+def resize_for_captioning(image: Image.Image, target_pixels: int = TARGET_PIXELS) -> Image.Image:
+    """
+    Resize image to approximately target_pixels while maintaining aspect ratio.
+
+    Args:
+        image: PIL Image to resize
+        target_pixels: Target total pixel count (default ~0.25 MP)
+
+    Returns:
+        Resized PIL Image (or original if already smaller)
+    """
+    width, height = image.size
+    current_pixels = width * height
+
+    if current_pixels <= target_pixels:
+        # Image is already small enough
+        return image
+
+    # Calculate scale factor to reach target pixels
+    # new_width * new_height = target_pixels
+    # (width * scale) * (height * scale) = target_pixels
+    # scale^2 = target_pixels / (width * height)
+    scale = math.sqrt(target_pixels / current_pixels)
+
+    new_width = int(width * scale)
+    new_height = int(height * scale)
+
+    # Use LANCZOS for high quality downscaling
+    resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+    return resized
 
 
 class QwenGenerator:
@@ -76,7 +115,13 @@ class QwenGenerator:
             print("Opening image...")
             image_path = Path(image_path)
             image = Image.open(image_path).convert('RGB')
-            print(f"Image opened successfully. Size: {image.size}")
+            original_size = image.size
+            print(f"Image opened. Original size: {original_size}")
+
+            # Resize to ~0.25 MP for faster processing
+            image = resize_for_captioning(image)
+            if image.size != original_size:
+                print(f"Resized to: {image.size} ({image.size[0] * image.size[1]:,} pixels)")
 
             # Prepare messages in Qwen2.5-VL format
             messages = [
