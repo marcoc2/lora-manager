@@ -466,7 +466,8 @@ class TrainingController(QObject):
                         "caption_dropout_rate": 0.05,
                         "shuffle_tokens": False,
                         "cache_latents_to_disk": True,
-                        "cache_text_embeddings": True, # Added for VRAM optimization
+                        # Disable cache_text_embeddings for batch_size > 1 due to collation issues
+                        "cache_text_embeddings": config.get("batch_size", 1) == 1, 
                         "resolution": [config.get("resolution", 1024)]
                     }],
                     "train": {
@@ -498,7 +499,7 @@ class TrainingController(QObject):
                         "assistant_lora_path": config.get("adapter_path")
                     },
                     "sample": {
-                        "sampler": "flowmatch",
+                        "sampler": config.get("sampler", "flowmatch"),
                         "sample_every": config.get("sample_every", 250),
                         "width": 1024,
                         "height": 1024,

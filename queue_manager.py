@@ -223,6 +223,11 @@ class QueueManager(QWidget):
         self.skip_current_btn.setStyleSheet("QPushButton { background-color: #FF9800; color: white; }")
         self.skip_current_btn.setToolTip("Mata o processo atual e passa para o próximo da fila")
 
+        self.remove_selected_btn = QPushButton("Remove Selected")
+        self.remove_selected_btn.clicked.connect(self.remove_selected_task)
+        self.remove_selected_btn.setStyleSheet("QPushButton { background-color: #E91E63; color: white; }")
+        self.remove_selected_btn.setToolTip("Remove a tarefa selecionada da fila (apenas tarefas pendentes)")
+
         self.clear_completed_btn = QPushButton("Clear Completed")
         self.clear_completed_btn.clicked.connect(self.clear_completed_tasks)
 
@@ -234,6 +239,7 @@ class QueueManager(QWidget):
         self.reset_queue_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; }")
 
         button_layout.addWidget(self.skip_current_btn)
+        button_layout.addWidget(self.remove_selected_btn)
         button_layout.addWidget(self.clear_completed_btn)
         button_layout.addWidget(self.clear_all_btn)
         button_layout.addWidget(self.reset_queue_btn)
@@ -558,7 +564,14 @@ class QueueManager(QWidget):
                 return
 
             dataset_path = task.dataset_path
-            dest_folder = dataset_path / model_type
+            
+            # Create timestamped folder based on task start time to avoid overwriting
+            if task.start_time:
+                timestamp_str = datetime.fromtimestamp(task.start_time).strftime("%Y-%m-%d_%H-%M-%S")
+            else:
+                timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                
+            dest_folder = dataset_path / model_type / timestamp_str
             dest_folder.mkdir(parents=True, exist_ok=True)
             
             import shutil
@@ -842,12 +855,14 @@ class QueueManager(QWidget):
                 self.signal_append_log.emit("Skipping post-processing: No model_type found in metadata.\n")
                 return
 
-            # Images are in dataset_path/cropped_images/model_type
-            samples_dir = task.dataset_path / "cropped_images" / model_type
+            # Images are in dataset_path/model_type/timestamp
+            # Create timestamped folder based on task start time
+            if task.start_time:
+                timestamp_str = datetime.fromtimestamp(task.start_time).strftime("%Y-%m-%d_%H-%M-%S")
+            else:
+                timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-            # Fallback: check if images are directly in dataset_path/model_type (for non-standard setups)
-            if not samples_dir.exists():
-                samples_dir = task.dataset_path / model_type
+            samples_dir = task.dataset_path / model_type / timestamp_str
 
             self.signal_append_log.emit(f"Post-processing: Checking for images in {samples_dir}\n")
 
@@ -856,9 +871,15 @@ class QueueManager(QWidget):
                 image_count = len(list(samples_dir.glob("*.png"))) + len(list(samples_dir.glob("*.jpg")))
                 if image_count == 0:
                     self.signal_append_log.emit(f"No images found in {samples_dir}\n")
-                    return
+                    # Try fallback to legacy folder
+                    fallback_dir = task.dataset_path / model_type
+                    if fallback_dir.exists() and fallback_dir != samples_dir:
+                         self.signal_append_log.emit(f"Checking fallback legacy folder: {fallback_dir}\n")
+                         samples_dir = fallback_dir
+                         image_count = len(list(samples_dir.glob("*.png"))) + len(list(samples_dir.glob("*.jpg")))
 
-                self.signal_append_log.emit(f"Found {image_count} images\n")
+                if image_count > 0:
+                    self.signal_append_log.emit(f"Found {image_count} images\n")
 
                 # Primary: Use RIFE interpolation for smooth video
                 video_path = samples_dir / "training_preview.mp4"
@@ -952,3 +973,56 @@ class QueueManager(QWidget):
             task = item.data(Qt.ItemDataRole.UserRole)
             if task.status != "Running":
                 self.queue_list.takeItem(i)
+
+    def remove_selected_task(self):
+        """Remove the selected task from the queue (only if pending)"""
+        current_item = self.queue_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Warning", "Selecione uma tarefa na lista para remover.")
+            return
+
+        task = current_item.data(Qt.ItemDataRole.UserRole)
+
+        if task.status == "Running":
+            QMessageBox.warning(
+                self, "Warning",
+                "Não é possível remover uma tarefa em execução.\n"
+                "Use 'Skip Current' para pular a tarefa atual."
+            )
+            return
+
+        if task.status in ["Completed", "Failed", "Skipped"]:
+            # Just remove from UI, it's already done
+            row = self.queue_list.row(current_item)
+            self.queue_list.takeItem(row)
+            self.signal_append_log.emit(f"Removida tarefa finalizada: {task.output_name}\n")
+            return
+
+        # Task is Pending - need to remove from queue too
+        reply = QMessageBox.question(
+            self, "Remove Task",
+            f"Remover a tarefa '{task.output_name}' da fila?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Remove from UI
+            row = self.queue_list.row(current_item)
+            self.queue_list.takeItem(row)
+
+            # Rebuild the queue without the removed task
+            # Since queue.Queue doesn't support arbitrary removal, we rebuild it
+            remaining_tasks = []
+            while True:
+                try:
+                    queued_task = self.task_queue.get_nowait()
+                    if queued_task != task:
+                        remaining_tasks.append(queued_task)
+                except queue.Empty:
+                    break
+
+            # Put back remaining tasks
+            for t in remaining_tasks:
+                self.task_queue.put(t)
+
+            self.signal_append_log.emit(f"Tarefa removida da fila: {task.output_name}\n")

@@ -214,6 +214,15 @@ class ZImageTrainingWidgets(QWidget):
         self.enable_sampling.stateChanged.connect(self.on_sampling_toggled)
         sample_layout.addWidget(self.enable_sampling)
 
+        # Sampler Selection
+        sampler_layout = QHBoxLayout()
+        self.sampler = QComboBox()
+        self.sampler.addItems(["flowmatch", "euler", "euler_a", "dpm_2", "dpm_2_a", "ddim"])
+        self.sampler.setCurrentText("flowmatch")
+        sampler_layout.addWidget(QLabel("Preview Sampler:"))
+        sampler_layout.addWidget(self.sampler)
+        sample_layout.addLayout(sampler_layout)
+
         # Prompt input with auto-fill button
         prompt_header = QHBoxLayout()
         prompt_label = QLabel("Sample Prompts:")
@@ -357,7 +366,8 @@ class ZImageTrainingWidgets(QWidget):
             "save_every": self.save_every.value(),
             "sample_every": self.sample_every.value(),
             "sample_prompts": self.sample_prompts.toPlainText(),
-            "enable_sampling": self.enable_sampling.isChecked()
+            "enable_sampling": self.enable_sampling.isChecked(),
+            "sampler": self.sampler.currentText()
         }
 
     def save_current_config(self):
@@ -385,3 +395,4 @@ class ZImageTrainingWidgets(QWidget):
         if "sample_every" in config: self.sample_every.setValue(config["sample_every"])
         if "sample_prompts" in config: self.sample_prompts.setText(config["sample_prompts"])
         if "enable_sampling" in config: self.enable_sampling.setChecked(config["enable_sampling"])
+        if "sampler" in config: self.sampler.setCurrentText(config["sampler"])
