@@ -1,9 +1,10 @@
 import sys
 import os
-import torch
-import numpy as np
+import traceback
 from pathlib import Path
 import types
+
+print("[RIFE] Script starting...")
 
 # Add current directory to path for video_generator import
 sys.path.insert(0, str(Path(__file__).parent))
@@ -12,37 +13,89 @@ sys.path.insert(0, str(Path(__file__).parent))
 REF_DIR = Path(__file__).parent / "reference" / "ComfyUI-Frame-Interpolation"
 sys.path.append(str(REF_DIR))
 
-# Mock comfy.model_management
+# Verify reference directory exists
+if not REF_DIR.exists():
+    print(f"[RIFE] ERROR: Reference directory not found: {REF_DIR}")
+    sys.exit(1)
+
+print(f"[RIFE] Reference dir: {REF_DIR}")
+
+# Check for required dependencies first
+print("[RIFE] Checking dependencies...")
+try:
+    import torch
+    import numpy as np
+    print(f"[RIFE] PyTorch: {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
+except ImportError as e:
+    print(f"[RIFE] ERROR: PyTorch not available: {e}")
+    sys.exit(1)
+
+try:
+    import einops
+    print(f"[RIFE] einops: {einops.__version__}")
+except ImportError:
+    print("[RIFE] Installing einops...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "einops"])
+    import einops
+
+try:
+    import packaging
+    print(f"[RIFE] packaging: available")
+except ImportError:
+    print("[RIFE] Installing packaging...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "packaging"])
+    import packaging
+
+# Mock comfy.model_management BEFORE importing RIFE
+print("[RIFE] Setting up comfy mock...")
+
 class MockModelManagement:
     @staticmethod
     def get_torch_device():
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     @staticmethod
     def soft_empty_cache():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-# Inject mock into sys.modules
+# Create mock module structure
 mock_comfy = types.ModuleType("comfy")
-mock_comfy.model_management = MockModelManagement()
-sys.modules["comfy"] = mock_comfy
-sys.modules["comfy.model_management"] = MockModelManagement()
+mock_model_management = types.ModuleType("comfy.model_management")
 
-# Verify dependencies
-try:
-    import einops
-except ImportError:
-    print("Installing einops...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "einops"])
+# Add functions to the mock module
+mock_model_management.get_torch_device = MockModelManagement.get_torch_device
+mock_model_management.soft_empty_cache = MockModelManagement.soft_empty_cache
+
+mock_comfy.model_management = mock_model_management
+
+# Inject mocks into sys.modules
+sys.modules["comfy"] = mock_comfy
+sys.modules["comfy.model_management"] = mock_model_management
+
+print("[RIFE] Mock modules injected")
+
+# Verify checkpoint exists
+ckpt_path = REF_DIR / "ckpts" / "rife" / "rife47.pth"
+if not ckpt_path.exists():
+    print(f"[RIFE] WARNING: Checkpoint not found at {ckpt_path}")
+    print("[RIFE] Will be downloaded on first use")
 
 # Import RIFE
+print("[RIFE] Importing RIFE_VFI...")
 try:
     from vfi_models.rife import RIFE_VFI
+    print("[RIFE] RIFE_VFI imported successfully")
 except ImportError as e:
-    print(f"Error importing RIFE: {e}")
-    print(f"Sys path: {sys.path}")
+    print(f"[RIFE] ERROR importing RIFE: {e}")
+    print(f"[RIFE] Sys path: {sys.path}")
+    traceback.print_exc()
+    sys.exit(1)
+except Exception as e:
+    print(f"[RIFE] ERROR during RIFE import: {e}")
+    traceback.print_exc()
     sys.exit(1)
 
 def load_images(folder_path):
@@ -153,6 +206,8 @@ def interpolate_video(input_folder, output_file, multiplier=8, fps=24):
 
 if __name__ == "__main__":
     import argparse
+    import traceback
+
     parser = argparse.ArgumentParser(description="Interpolate video frames using RIFE AI")
     parser.add_argument("--input", "-i", required=True, help="Input folder containing images")
     parser.add_argument("--output", "-o", default="video_rife_torch.mp4", help="Output video path")
@@ -161,5 +216,18 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    success = interpolate_video(args.input, args.output, args.multiplier, args.fps)
-    sys.exit(0 if success else 1)
+    try:
+        print(f"[RIFE] Starting interpolation")
+        print(f"[RIFE] Input: {args.input}")
+        print(f"[RIFE] Output: {args.output}")
+        print(f"[RIFE] Multiplier: {args.multiplier}x, FPS: {args.fps}")
+        success = interpolate_video(args.input, args.output, args.multiplier, args.fps)
+        if success:
+            print(f"[RIFE] Interpolation completed successfully")
+        else:
+            print(f"[RIFE] Interpolation failed")
+        sys.exit(0 if success else 1)
+    except Exception as e:
+        print(f"[RIFE] FATAL ERROR: {e}")
+        traceback.print_exc()
+        sys.exit(1)

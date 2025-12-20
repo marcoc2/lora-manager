@@ -56,6 +56,22 @@ class MainController(QObject):
         self.project_manager.project_loaded.connect(self._on_project_loaded)
         self.project_manager.save_status_changed.connect(self._on_save_status_changed)
 
+        # Connect queue manager signal for training results
+        if hasattr(self.view, 'queue_manager'):
+            self.view.queue_manager.signal_training_completed.connect(self._on_training_completed)
+
+    def _on_training_completed(self, results: dict):
+        """Atualiza o projeto com os resultados do treinamento"""
+        if self.project_manager.has_project:
+            self.project_manager.update_last_training_results(
+                final_loss=results.get("final_loss"),
+                report_path=results.get("report_path"),
+                output_path=results.get("output_path")
+            )
+            # Atualiza o painel "Last Training" na DatasetView
+            if hasattr(self.view, 'dataset_view'):
+                self.view.dataset_view.update_last_training()
+
     def select_dataset_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, "Select Dataset Folder")
         if folder:

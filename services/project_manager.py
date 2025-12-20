@@ -46,6 +46,11 @@ class TrainingRun(BaseModel):
     output_name: str
     output_path: Optional[str] = None
     config_snapshot: Dict[str, Any] = {}  # Snapshot dos parâmetros usados
+    # Campos para avaliação e análise
+    rating: Optional[int] = None  # 1-5 estrelas, None = não avaliado
+    notes: Optional[str] = None   # Notas do usuário sobre o resultado
+    final_loss: Optional[float] = None  # Loss final do treinamento
+    report_path: Optional[str] = None   # Caminho para training_report.json
 
 
 class LoraProject(BaseModel):
@@ -339,7 +344,9 @@ class ProjectManager(QObject):
 
     def add_training_run(self, model_type: str, steps: int, output_name: str,
                          output_path: Optional[str] = None,
-                         config_snapshot: Optional[Dict] = None):
+                         config_snapshot: Optional[Dict] = None,
+                         final_loss: Optional[float] = None,
+                         report_path: Optional[str] = None):
         """
         Adiciona um registro de treinamento ao histórico.
 
@@ -349,6 +356,8 @@ class ProjectManager(QObject):
             output_name: Nome do arquivo de saída
             output_path: Caminho do arquivo de saída (opcional)
             config_snapshot: Snapshot dos parâmetros usados (opcional)
+            final_loss: Loss final do treinamento (opcional)
+            report_path: Caminho para o training_report.json (opcional)
         """
         if self._project:
             run = TrainingRun(
@@ -357,9 +366,71 @@ class ProjectManager(QObject):
                 steps=steps,
                 output_name=output_name,
                 output_path=output_path,
-                config_snapshot=config_snapshot or {}
+                config_snapshot=config_snapshot or {},
+                final_loss=final_loss,
+                report_path=report_path
             )
             self._project.training_history.append(run)
+            self.schedule_autosave()
+
+    def get_last_training_run(self) -> Optional[TrainingRun]:
+        """Retorna o último treinamento do projeto"""
+        if self._project and self._project.training_history:
+            return self._project.training_history[-1]
+        return None
+
+    def get_training_history(self) -> List[TrainingRun]:
+        """Retorna o histórico completo de treinamentos"""
+        if self._project:
+            return self._project.training_history
+        return []
+
+    def update_training_rating(self, index: int, rating: Optional[int]):
+        """
+        Atualiza o rating de um treinamento.
+
+        Args:
+            index: Índice do treinamento na lista
+            rating: Rating de 1-5 ou None para remover
+        """
+        if self._project and 0 <= index < len(self._project.training_history):
+            if rating is not None:
+                rating = max(1, min(5, rating))  # Clamp entre 1-5
+            self._project.training_history[index].rating = rating
+            self.schedule_autosave()
+
+    def update_training_notes(self, index: int, notes: Optional[str]):
+        """
+        Atualiza as notas de um treinamento.
+
+        Args:
+            index: Índice do treinamento na lista
+            notes: Texto das notas ou None para remover
+        """
+        if self._project and 0 <= index < len(self._project.training_history):
+            self._project.training_history[index].notes = notes
+            self.schedule_autosave()
+
+    def update_last_training_results(self, final_loss: Optional[float] = None,
+                                     report_path: Optional[str] = None,
+                                     output_path: Optional[str] = None):
+        """
+        Atualiza o último treinamento com os resultados finais.
+        Chamado após o treino terminar e o report ser gerado.
+
+        Args:
+            final_loss: Loss final do treinamento
+            report_path: Caminho para o training_report.json
+            output_path: Caminho para a pasta de output
+        """
+        if self._project and self._project.training_history:
+            last_run = self._project.training_history[-1]
+            if final_loss is not None:
+                last_run.final_loss = final_loss
+            if report_path is not None:
+                last_run.report_path = report_path
+            if output_path is not None:
+                last_run.output_path = output_path
             self.schedule_autosave()
 
     def update_project_info(self, name: Optional[str] = None,

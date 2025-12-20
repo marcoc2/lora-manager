@@ -1,9 +1,69 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QGroupBox,
-    QPushButton, QLabel, QSpinBox, QSplitter, QComboBox, QTextEdit, QLineEdit
+    QPushButton, QLabel, QSpinBox, QSplitter, QComboBox, QTextEdit, QLineEdit,
+    QFrame
 )
-from PyQt6.QtGui import QIcon, QStandardItemModel, QStandardItem
+from PyQt6.QtGui import QIcon, QStandardItemModel, QStandardItem, QCursor
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
+
+
+class StarRatingWidget(QWidget):
+    """Widget clicável de 5 estrelas para rating"""
+    rating_changed = pyqtSignal(int)  # Emite 1-5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rating = 0  # 0 = não avaliado
+        self._hover_rating = 0
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.stars = []
+        for i in range(5):
+            star = QLabel("☆")
+            star.setStyleSheet("font-size: 18px; color: #FFD700;")
+            star.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            star.mousePressEvent = lambda e, idx=i: self._on_star_clicked(idx + 1)
+            star.enterEvent = lambda e, idx=i: self._on_star_hover(idx + 1)
+            star.leaveEvent = lambda e: self._on_star_leave()
+            self.stars.append(star)
+            layout.addWidget(star)
+
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def _on_star_clicked(self, rating: int):
+        self._rating = rating
+        self._update_display()
+        self.rating_changed.emit(rating)
+
+    def _on_star_hover(self, rating: int):
+        self._hover_rating = rating
+        self._update_display()
+
+    def _on_star_leave(self):
+        self._hover_rating = 0
+        self._update_display()
+
+    def _update_display(self):
+        display_rating = self._hover_rating if self._hover_rating > 0 else self._rating
+        for i, star in enumerate(self.stars):
+            if i < display_rating:
+                star.setText("★")
+            else:
+                star.setText("☆")
+
+    def set_rating(self, rating: int):
+        """Define o rating programaticamente"""
+        self._rating = max(0, min(5, rating)) if rating else 0
+        self._update_display()
+
+    def get_rating(self) -> int:
+        return self._rating
 
 class DatasetView(QWidget):
     # Signals for project changes
@@ -154,20 +214,42 @@ class DatasetView(QWidget):
         img_group.setLayout(img_layout)
         layout.addWidget(img_group)
         
-        # 3. Utilities
-        util_group = QGroupBox("3. Utilities")
-        util_layout = QVBoxLayout()
-        
-        rename_btn = QPushButton("Rename and Convert Images")
-        rename_btn.clicked.connect(self.parent_window.rename_and_convert_images)
-        util_layout.addWidget(rename_btn)
-        
-        analyze_btn = QPushButton("Analyze Dataset")
-        analyze_btn.clicked.connect(self.parent_window.analyze_dataset)
-        util_layout.addWidget(analyze_btn)
-        
-        util_group.setLayout(util_layout)
-        layout.addWidget(util_group)
+        # 3. Last Training - Resumo do último treino
+        self.last_training_group = QGroupBox("Last Training")
+        last_training_layout = QVBoxLayout()
+
+        # Nome do treino
+        self.last_train_name = QLabel("No training yet")
+        self.last_train_name.setStyleSheet("font-weight: bold;")
+        last_training_layout.addWidget(self.last_train_name)
+
+        # Data e modelo
+        self.last_train_info = QLabel("")
+        self.last_train_info.setStyleSheet("color: #888; font-size: 11px;")
+        last_training_layout.addWidget(self.last_train_info)
+
+        # Steps e Loss
+        self.last_train_stats = QLabel("")
+        self.last_train_stats.setStyleSheet("font-size: 12px;")
+        last_training_layout.addWidget(self.last_train_stats)
+
+        # Rating com estrelas
+        rating_layout = QHBoxLayout()
+        rating_layout.addWidget(QLabel("Rating:"))
+        self.last_train_rating = StarRatingWidget()
+        self.last_train_rating.rating_changed.connect(self._on_last_training_rated)
+        rating_layout.addWidget(self.last_train_rating)
+        rating_layout.addStretch()
+        last_training_layout.addLayout(rating_layout)
+
+        # Botão para ver histórico completo
+        history_btn = QPushButton("View Full History")
+        history_btn.setObjectName("actionButton")
+        history_btn.clicked.connect(self._open_training_history)
+        last_training_layout.addWidget(history_btn)
+
+        self.last_training_group.setLayout(last_training_layout)
+        layout.addWidget(self.last_training_group)
         
 
         
@@ -226,6 +308,9 @@ class DatasetView(QWidget):
         self.project_name_edit.blockSignals(False)
         self.project_trigger_edit.blockSignals(False)
 
+        # Atualiza painel de último treinamento
+        self.update_last_training()
+
     def update_save_status(self, status: str):
         """Update save status indicator"""
         if status == "saving":
@@ -247,3 +332,69 @@ class DatasetView(QWidget):
         """Handle trigger word changes - trigger auto-save"""
         if self._project and hasattr(self.parent_window, 'project_manager'):
             self.parent_window.project_manager.set_trigger_word(text)
+
+    # -------------------------------------------------------------------------
+    # Last Training Panel Methods
+    # -------------------------------------------------------------------------
+
+    def update_last_training(self):
+        """Atualiza o painel com informações do último treinamento"""
+        if not hasattr(self.parent_window, 'project_manager'):
+            return
+
+        pm = self.parent_window.project_manager
+        last_run = pm.get_last_training_run()
+
+        if last_run is None:
+            self.last_train_name.setText("No training yet")
+            self.last_train_info.setText("")
+            self.last_train_stats.setText("")
+            self.last_train_rating.set_rating(0)
+            self.last_train_rating.setEnabled(False)
+            return
+
+        self.last_train_rating.setEnabled(True)
+
+        # Nome do treino
+        self.last_train_name.setText(last_run.output_name)
+
+        # Data e modelo
+        date_str = last_run.timestamp.strftime("%Y-%m-%d %H:%M")
+        self.last_train_info.setText(f"{date_str} | {last_run.model_type}")
+
+        # Steps e Loss
+        loss_str = f"{last_run.final_loss:.4f}" if last_run.final_loss else "N/A"
+        self.last_train_stats.setText(f"Steps: {last_run.steps} | Loss: {loss_str}")
+
+        # Rating
+        self.last_train_rating.set_rating(last_run.rating or 0)
+
+    def _on_last_training_rated(self, rating: int):
+        """Chamado quando o usuário clica nas estrelas do último treino"""
+        if not hasattr(self.parent_window, 'project_manager'):
+            return
+
+        pm = self.parent_window.project_manager
+        history = pm.get_training_history()
+
+        if history:
+            # Atualiza o rating do último treino (último da lista)
+            pm.update_training_rating(len(history) - 1, rating)
+
+    def _open_training_history(self):
+        """Abre a janela de histórico de treinamentos"""
+        if not hasattr(self.parent_window, 'project_manager'):
+            return
+
+        pm = self.parent_window.project_manager
+        if not pm.has_project:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "No Project", "Please load a project first.")
+            return
+
+        from views.training_history_dialog import TrainingHistoryDialog
+        dialog = TrainingHistoryDialog(pm, self)
+        dialog.exec()
+
+        # Atualiza o painel após fechar (pode ter mudado ratings)
+        self.update_last_training()
